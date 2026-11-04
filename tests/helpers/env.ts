@@ -119,6 +119,7 @@ export class TestSessionHost implements SessionHost {
   readonly children: string[] = [];
   readonly rootModels: { sessionId: string; provider?: string; model?: string }[] = [];
   readonly childModels: { sessionId: string; provider?: string; model?: string }[] = [];
+  readonly resumedModels: { sessionId: string; provider?: string; model?: string }[] = [];
   disposed: string[] = [];
 
   async createRoot(input: CreateRootSessionInput): Promise<{ sessionId: string }> {
@@ -142,8 +143,9 @@ export class TestSessionHost implements SessionHost {
     return { sessionId };
   }
 
-  async resumeRoot(sessionId: string): Promise<void> {
+  async resumeRoot(sessionId: string, provider?: string, model?: string): Promise<void> {
     if (!this.roots.includes(sessionId)) this.roots.push(sessionId);
+    this.resumedModels.push({ sessionId, provider, model });
   }
 
   async disposeRoot(sessionId: string): Promise<void> {

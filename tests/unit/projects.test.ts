@@ -1,7 +1,7 @@
 /** Project registry, RSI validation and explicit session bindings. */
 
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeService, makeTempProject } from '../helpers/env.ts';
@@ -163,6 +163,128 @@ test('pausing a project parks new work and resume restores it', async () => {
   }
 });
 
+test('project pause preserves a manually paused group and archive parks active groups', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const state = statePath(project.root);
+    const created = service.createProject({ name: 'research', rsiStateRef: state, repositoryRef: project.source });
+    const teams: import('../../src/teams/manager.ts').TeamView[] = [];
+    for (const [name, route] of [['group-a', 'A'], ['group-b', 'B'], ['group-c', 'C']]) {
+      teams.push(await service.createTeam({ projectId: created.projectId, routeId: route, name, rootSessionId: `root-${name}` }));
+    }
+    service.pauseTeam(teams[1]?.teamId as string);
+    service.setProjectStatus(created.projectId, 'paused');
+    assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'paused');
+    assert.equal(service.getTeam(teams[1]?.teamId as string).status, 'paused');
+    assert.equal(service.getTeam(teams[2]?.teamId as string).status, 'paused');
+    service.setProjectStatus(created.projectId, 'active');
+    assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'active');
+    assert.equal(service.getTeam(teams[1]?.teamId as string).status, 'paused', 'manual pause must survive project resume');
+    assert.equal(service.getTeam(teams[2]?.teamId as string).status, 'active');
+
+    service.setProjectStatus(created.projectId, 'archived');
+    assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'paused');
+    assert.throws(
+      () => service.submitTask({
+        projectId: created.projectId, teamId: teams[0]?.teamId as string, type: 'local', title: 'archived',
+        payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'TEAM_STATE_INVALID',
+    );
+    service.setProjectStatus(created.projectId, 'active');
+    assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'active');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('startup reconciliation re-parks a group that drifted out of a paused project', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    const team = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    service.setProjectStatus(created.projectId, 'paused');
+    service.resumeTeam(team.teamId);
+    assert.equal(service.getTeam(team.teamId).status, 'active');
+    service.reconcileProjectPauses();
+    assert.equal(service.getTeam(team.teamId).status, 'paused');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('a project whose RSI state disappeared cannot create an orphan group', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const state = statePath(project.root);
+    const created = service.createProject({ name: 'research', rsiStateRef: state, repositoryRef: project.source });
+    unlinkSync(state);
+    await assert.rejects(
+      () => service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' }),
+      (error: unknown) => error instanceof MeshError && error.code === 'RSI_STATE_UNAVAILABLE',
+    );
+    assert.equal(service.listTeams(created.projectId).length, 0);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('a group whose Captain binding fails is retired, not left half-bound', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project, { sessionBinding: 'external' });
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    service.attachSession(created.projectId, 'root-collision');
+    await assert.rejects(
+      () => service.createTeam({
+        projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-collision',
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'SESSION_BINDING_CONFLICT',
+    );
+    const groups = service.listTeams(created.projectId);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0]?.status, 'destroyed');
+    assert.equal(service.getProject(created.projectId).captainSessions.length, 0);
+    const workspace = service.listWorkspaces(created.projectId)[0];
+    assert.ok(workspace !== undefined);
+    assert.equal(existsSync(workspace.path), false, 'failed group creation must remove its worktree');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('member binding cannot name a group from another project', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const stateA = statePath(project.root);
+    const routeB = join(project.root, '.research-idea-pipeline', 'routes', 'B');
+    mkdirSync(routeB, { recursive: true });
+    const stateB = join(routeB, 'research-state.json');
+    copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), stateB);
+    const a = service.createProject({ name: 'A', rsiStateRef: stateA, repositoryRef: project.source });
+    const b = service.createProject({ name: 'B', rsiStateRef: stateB, repositoryRef: project.source });
+    const teamA = await service.createTeam({ projectId: a.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    assert.throws(
+      () => service.attachMemberSession(b.projectId, teamA.teamId, 'member-x'),
+      (error: unknown) => error instanceof MeshError && error.code === 'TEAM_NOT_FOUND',
+    );
+    const bound = service.attachMemberSession(a.projectId, teamA.teamId, 'member-x');
+    assert.equal(bound.role, 'member');
+    assert.equal(bound.groupId, teamA.teamId);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
 test('member identity is bound to its group and project', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project);
@@ -175,6 +297,14 @@ test('member identity is bound to its group and project', async () => {
     assert.equal(binding?.role, 'member');
     assert.equal(binding?.groupId, team.teamId);
     assert.equal(binding?.projectId, created.projectId);
+    service.releaseSubagent(team.teamId, sub.sessionId);
+    assert.equal(service.sessionBinding(sub.sessionId), undefined);
+    const rebound = service.attachMemberSession(created.projectId, team.teamId, sub.sessionId);
+    assert.equal(rebound.role, 'member');
+    await service.destroyTeam(team.teamId);
+    assert.equal(service.sessionBinding(sub.sessionId), undefined);
+    assert.equal(service.sessionBinding(team.rootSessionId), undefined);
+    assert.equal(service.getProject(created.projectId).captainSessions.length, 0);
   } finally {
     await service.close();
     project.cleanup();

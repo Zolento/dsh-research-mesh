@@ -13,6 +13,8 @@
  */
 
 import { MeshError } from '../errors.ts';
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative as relativePath, resolve as resolvePath } from 'node:path';
 import type { MeshConfig } from '../config/types.ts';
 import { MeshStore } from '../storage/mesh-store.ts';
 import type { MeshGroupRecord, MeshGroupStatus } from '../storage/types.ts';
@@ -163,8 +165,18 @@ export class TeamManager {
     const routeId = requireSlug(input.routeId, 'routeId');
     const name = requireSlug(input.name, 'name');
     const teamId = input.teamId ?? newId('team');
+    if (input.teamId !== undefined
+      && (this.#store.teamStore.getTeam(teamId) !== undefined || this.#store.getGroup(teamId) !== undefined)) {
+      throw new MeshError('TEAM_CONFLICT', `group id ${teamId} already exists`, { teamId });
+    }
     const objective = input.objective?.trim() ?? `Research group ${name}`;
     const statePath = input.researchStatePath ?? canonicalStatePath(this.#config.projectRoot, routeId);
+    const lexicalState = resolvePath(this.#config.projectRoot, statePath);
+    const resolvedState = existsSync(lexicalState) ? realpathSync(lexicalState) : lexicalState;
+    const stateRelative = relativePath(realpathSync(this.#config.projectRoot), resolvedState);
+    if (stateRelative.startsWith('..') || isAbsolute(stateRelative)) {
+      throw new MeshError('PATH_ESCAPE', 'research state path must stay inside the project root', { statePath });
+    }
     const pipelineRoot = input.pipelineRoot ?? this.#config.rsi.skillPath ?? null;
 
     this.#assertQuota(projectId);
@@ -266,6 +278,9 @@ export class TeamManager {
 
     try {
       this.#store.transaction(() => {
+        if (this.#store.teamStore.getTeam(teamId) !== undefined || this.#store.getGroup(teamId) !== undefined) {
+          throw new MeshError('TEAM_CONFLICT', `group id ${teamId} already exists`, { teamId });
+        }
         this.#assertQuota(projectId);
         this.#store.teamStore.upsertTeam(team);
         this.#store.teamStore.upsertMember(captain);
@@ -380,10 +395,11 @@ export class TeamManager {
     const team = this.#requireTeam(input.teamId);
     const group = this.#store.getGroup(input.teamId);
     if (group === undefined) throw this.#notFound(input.teamId);
-    if (team.status !== 'active') {
+    if (team.status !== 'active' || group.status !== 'active') {
       throw new MeshError('TEAM_STATE_INVALID', 'subagents can only be registered in an active group', {
         teamId: input.teamId,
         status: team.status,
+        groupStatus: group.status,
       });
     }
     const name = requireSlug(input.name, 'subagent name');
@@ -393,7 +409,14 @@ export class TeamManager {
     roleProfile(input.role);
     this.#assertSubagentQuota(input.teamId);
 
-    const resolved = await this.#resolveSubagentModel(team.title, name);
+    // A caller-supplied session is validated before any new DSH session is
+    // created, so a duplicate refusal cannot leak an unused identity.
+    if (input.sessionId !== undefined) {
+      this.#assertSessionUnclaimed(input.teamId, input.sessionId);
+    }
+    const currentSubagents = this.#store.teamStore.listMembers(input.teamId)
+      .filter(member => member.role !== 'captain' && member.status !== 'disposed').length;
+    const resolved = await this.#resolveSubagentModel(team.title, name, currentSubagents + 1);
     let sessionId = input.sessionId;
     if (sessionId === undefined) {
       if (this.#config.sessionBinding === 'external') {
@@ -416,26 +439,6 @@ export class TeamManager {
     } else if (sessionId.trim() === '') {
       throw new MeshError('INVALID_ARGUMENT', 'subagent sessionId must not be empty');
     }
-    const existing = this.#store.teamStore.listMembers(input.teamId)
-      .find(member => member.agentId === sessionId && member.status !== 'disposed');
-    if (existing !== undefined) {
-      throw new MeshError('SUBAGENT_DUPLICATE', 'this session is already registered in the group', {
-        teamId: input.teamId,
-        sessionId,
-      });
-    }
-    for (const other of this.#store.listGroups()) {
-      const duplicate = this.#store.teamStore.listMembers(other.teamId)
-        .find(member => member.agentId === sessionId && member.status !== 'disposed');
-      if (duplicate !== undefined) {
-        throw new MeshError('SUBAGENT_DUPLICATE', 'a session can belong to only one group', {
-          teamId: input.teamId,
-          otherTeamId: other.teamId,
-          sessionId,
-        });
-      }
-    }
-
     const now = nowIso();
     const member: TeamMember = {
       teamId: input.teamId,
@@ -452,22 +455,30 @@ export class TeamManager {
       currentTaskId: null,
       revision: 1,
     };
-    this.#store.transaction(() => {
-      this.#assertSubagentQuota(input.teamId);
-      this.#store.teamStore.upsertMember(member);
-      this.#store.recordAgentModel({
-        sessionId,
-        teamId: input.teamId,
-        role: input.role,
-        name,
-        provider: resolved.provider,
-        model: resolved.model,
-        source: resolved.source,
-        configVersion: resolved.configVersion,
-        createdAt: now,
+    try {
+      this.#store.transaction(() => {
+        this.#assertSubagentQuota(input.teamId);
+        this.#assertSessionUnclaimed(input.teamId, sessionId);
+        this.#store.teamStore.upsertMember(member);
+        this.#store.recordAgentModel({
+          sessionId,
+          teamId: input.teamId,
+          role: input.role,
+          name,
+          provider: resolved.provider,
+          model: resolved.model,
+          source: resolved.source,
+          configVersion: resolved.configVersion,
+          createdAt: now,
+        });
+        this.#store.appendEvent('team', input.teamId, 'subagent-registered', { sessionId, role: input.role });
       });
-      this.#store.appendEvent('team', input.teamId, 'subagent-registered', { sessionId, role: input.role });
-    });
+    } catch (error) {
+      // The DSH session may already exist; release a locally owned handle when
+      // possible. SessionController-owned sessions are persistent and remain.
+      try { await this.#sessions.disposeRoot(sessionId); } catch { /* retain original failure */ }
+      throw error;
+    }
     this.#logger.info('subagent identity registered', { teamId: input.teamId, sessionId, role: input.role });
     return {
       teamId: input.teamId,
@@ -488,6 +499,13 @@ export class TeamManager {
     const member = this.#store.teamStore.getMember(teamId, sessionId);
     if (member === undefined || member.role === 'captain') {
       throw new MeshError('SUBAGENT_NOT_FOUND', 'unknown subagent identity', { teamId, sessionId });
+    }
+    if (member.status === 'running' || member.currentTaskId !== null) {
+      throw new MeshError('SUBAGENT_BUSY', 'cannot release a subagent that is running or owns a task', {
+        teamId,
+        sessionId,
+        currentTaskId: member.currentTaskId,
+      });
     }
     this.#store.transaction(() => {
       this.#store.teamStore.upsertMember({
@@ -525,6 +543,7 @@ export class TeamManager {
   totalSubagents(): number {
     let total = 0;
     for (const group of this.#store.listGroups()) {
+      if (group.status === 'destroyed') continue;
       total += this.#store.teamStore.listMembers(group.teamId)
         .filter(member => member.role !== 'captain' && member.status !== 'disposed').length;
     }
@@ -546,9 +565,16 @@ export class TeamManager {
    */
   async resumeRootSession(teamId: string): Promise<void> {
     const team = this.#requireTeam(teamId);
-    const provider = this.#config.agent?.provider;
-    const model = this.#config.agent?.model;
-    await this.#sessions.resumeRoot(team.captainAgentId, provider, model);
+    const group = this.#store.getGroup(teamId);
+    if (group === undefined) throw this.#notFound(teamId);
+    // Resume with the group's resolved captain model, not a stale plugin-wide
+    // fallback. This keeps a restart consistent with the manual assignment.
+    const resolved = await this.#resolveCaptainModel(team.title, {
+      projectId: group.projectId,
+      routeId: group.routeId,
+      name: team.title,
+    });
+    await this.#sessions.resumeRoot(team.captainAgentId, resolved.provider, resolved.model);
   }
 
   /**
@@ -567,6 +593,24 @@ export class TeamManager {
   }
 
   // -- internals -----------------------------------------------------------
+
+  #assertSessionUnclaimed(teamId: string, sessionId: string): void {
+    const inTeam = this.#store.teamStore.listMembers(teamId)
+      .find(member => member.agentId === sessionId && member.status !== 'disposed');
+    if (inTeam !== undefined) {
+      throw new MeshError('SUBAGENT_DUPLICATE', 'this session is already registered in the group', { teamId, sessionId });
+    }
+    for (const other of this.#store.listGroups()) {
+      if (other.teamId === teamId) continue;
+      const duplicate = this.#store.teamStore.listMembers(other.teamId)
+        .find(member => member.agentId === sessionId && member.status !== 'disposed');
+      if (duplicate !== undefined) {
+        throw new MeshError('SUBAGENT_DUPLICATE', 'a session can belong to only one group', {
+          teamId, otherTeamId: other.teamId, sessionId,
+        });
+      }
+    }
+  }
 
   async #resolveCaptainModel(groupName: string, input: CreateTeamInput): Promise<ResolvedModel> {
     if (input.provider !== undefined || input.model !== undefined) {
@@ -593,8 +637,8 @@ export class TeamManager {
     return { ...this.#config.agent, source: 'plugin-config', configVersion: 'config' };
   }
 
-  async #resolveSubagentModel(groupName: string, slot: string): Promise<ResolvedModel> {
-    if (this.#models !== null) return this.#models.resolveSubagent(groupName, slot);
+  async #resolveSubagentModel(groupName: string, slot: string, ordinal?: number): Promise<ResolvedModel> {
+    if (this.#models !== null) return this.#models.resolveSubagent(groupName, slot, ordinal);
     if (this.#config.agent === undefined) {
       throw new MeshError('MODEL_CONFIG_INVALID', 'no group default model and no plugin agent fallback is configured', {
         groupName,

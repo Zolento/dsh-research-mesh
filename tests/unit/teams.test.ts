@@ -1,6 +1,8 @@
 /** Group registry, quotas, lifecycle and manual model assignment. */
 
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempProject, makeService, MOCK_MODEL, MOCK_PROVIDER } from '../helpers/env.ts';
 import { MeshError } from '../../src/errors.ts';
@@ -112,6 +114,76 @@ test('registry and worktrees survive a service restart', async () => {
   }
 });
 
+test('destroyed groups release global subagent quota and group slots', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const teams: string[] = [];
+    for (const name of ['group-a', 'group-b', 'group-c']) teams.push(await createExternalTeam(service, name));
+    for (const [index, teamId] of teams.entries()) {
+      for (let slot = 1; slot <= 4; slot += 1) {
+        await service.registerSubagent({ teamId, name: `quota-${index}-${slot}`, role: 'experiment', sessionId: `quota-session-${index}-${slot}` });
+      }
+    }
+    assert.equal(service.status().subagents, 12);
+    const workspace = service.getTeam(teams[0] as string).workspacePath as string;
+    await service.destroyTeam(teams[0] as string);
+    assert.equal(service.status().subagents, 8);
+    assert.ok(existsSync(workspace), 'destroy must retain the worktree');
+    await service.saveModelSettings({
+      version: 1,
+      groups: {
+        'group-d': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} },
+      },
+    });
+    const fourth = await service.createTeam({ projectId: 'proj-a', routeId: 'D', name: 'group-d', rootSessionId: 'root-d' });
+    for (let slot = 1; slot <= 4; slot += 1) {
+      await service.registerSubagent({ teamId: fourth.teamId, name: `quota-d-${slot}`, role: 'experiment', sessionId: `quota-d-session-${slot}` });
+    }
+    assert.equal(service.status().subagents, 12);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('group creation rejects a research-state path outside the project root', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    await assert.rejects(
+      () => service.createTeam({
+        projectId: 'proj-a',
+        routeId: 'A',
+        name: 'group-a',
+        rootSessionId: 'root-a',
+        researchStatePath: join(project.root, '..', 'outside-state.json'),
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'PATH_ESCAPE',
+    );
+    assert.equal(service.listTeams().length, 0);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('a caller-supplied team id cannot overwrite an existing group', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const first = await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a', teamId: 'team_fixed', rootSessionId: 'root-a' });
+    await assert.rejects(
+      () => service.createTeam({ projectId: 'proj-a', routeId: 'B', name: 'group-b', teamId: 'team_fixed', rootSessionId: 'root-b' }),
+      (error: unknown) => error instanceof MeshError && error.code === 'TEAM_CONFLICT',
+    );
+    assert.equal(service.getTeam(first.teamId).rootSessionId, 'root-a');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
 test('manual model selection: group default, captain override, subagent override, inherit', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project);
@@ -147,6 +219,60 @@ test('manual model selection: group default, captain override, subagent override
     const b = await service.createTeam({ projectId: 'proj-a', routeId: 'B', name: 'group-b', rootSessionId: 'root-b' });
     assert.equal(service.agentModel(b.rootSessionId)?.model, MOCK_MODEL);
     assert.equal(service.agentModel(b.rootSessionId)?.source, 'group-default');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('resuming a captain uses the group model, not the plugin-wide fallback', async () => {
+  const project = makeTempProject();
+  const { service, host } = await makeService(project, { sessionBinding: 'dsh' });
+  try {
+    await service.saveModelSettings({
+      version: 2,
+      groups: {
+        'group-a': {
+          default: { provider: MOCK_PROVIDER, model: MOCK_MODEL },
+          captain: { provider: MOCK_PROVIDER, model: 'mock-pro' },
+          subagents: {},
+        },
+        'group-b': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} },
+        'group-c': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} },
+      },
+    });
+    const team = await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a' });
+    await service.resumeRootSession(team.teamId);
+    const resumed = host.resumedModels.find(record => record.sessionId === team.rootSessionId);
+    assert.equal(resumed?.provider, MOCK_PROVIDER);
+    assert.equal(resumed?.model, 'mock-pro');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('subagent slot configuration applies by registration order when no explicit slot name matches', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    await service.saveModelSettings({
+      version: 2,
+      groups: {
+        'group-a': {
+          default: { provider: MOCK_PROVIDER, model: MOCK_MODEL },
+          captain: 'inherit',
+          subagents: { 'subagent-1': { provider: MOCK_PROVIDER, model: 'mock-pro' } },
+        },
+        'group-b': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} },
+        'group-c': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} },
+      },
+    });
+    const team = await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    const first = await service.registerSubagent({ teamId: team.teamId, name: 'worker-1', role: 'experiment', sessionId: 'slot-1' });
+    const second = await service.registerSubagent({ teamId: team.teamId, name: 'worker-2', role: 'experiment', sessionId: 'slot-2' });
+    assert.equal(service.agentModel(first.sessionId)?.model, 'mock-pro');
+    assert.equal(service.agentModel(second.sessionId)?.model, MOCK_MODEL);
   } finally {
     await service.close();
     project.cleanup();

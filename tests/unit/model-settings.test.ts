@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MeshError } from '../../src/errors.ts';
+import { Config } from '../../src/config/schema.ts';
 
 function fakeSettings(initial: unknown): {
   settings: SettingsFormsLike;
@@ -41,6 +42,59 @@ test('config-backed settings store writes through DSH settings and bumps the ver
   assert.equal(saved.version, 2);
   assert.equal(written.length, 1);
   assert.deepEqual(store.read(), saved);
+});
+
+test('empty groups are savable while an override without a default is rejected', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const saved = await service.saveModelSettings({
+      version: 1,
+      groups: {
+        'group-a': { captain: 'inherit', subagents: {} },
+        'group-b': { captain: 'inherit', subagents: {} },
+      },
+    });
+    assert.equal(saved.version, 2);
+    await assert.rejects(
+      () => service.saveModelSettings({
+        version: 2,
+        groups: {
+          'group-a': { captain: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, subagents: {} },
+        },
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'MODEL_CONFIG_INVALID',
+    );
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('the volatile Config schema accepts an untouched empty group', () => {
+  const value = Config({
+    modelAssignments: {
+      version: 1,
+      groups: { 'group-a': { captain: 'inherit', subagents: {} } },
+    },
+  });
+  const document = value.modelAssignments.get();
+  assert.equal(document.version, 1);
+  assert.equal(document.groups['group-a']?.default, undefined);
+});
+
+test('config-backed settings store observes a newer volatile revision', async () => {
+  let live = { version: 1, groups: {} };
+  const ref = { get: () => live };
+  const { settings } = fakeSettings({ version: 1, groups: {} });
+  const store = new ConfigModelSettingsStore({ settings, namespace: 'dsh-research-mesh', ref });
+  await store.write({
+    version: 1,
+    groups: { 'group-a': { default: { provider: MOCK_PROVIDER, model: MOCK_MODEL }, captain: 'inherit', subagents: {} } },
+  });
+  live = { version: 7, groups: { 'group-b': { default: { provider: MOCK_PROVIDER, model: 'mock-pro' }, captain: 'inherit', subagents: {} } } };
+  assert.equal(store.read().version, 7);
+  assert.equal(store.read().groups['group-b']?.default?.model, 'mock-pro');
 });
 
 test('config-backed settings store refuses a missing settings namespace', async () => {

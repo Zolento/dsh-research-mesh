@@ -57,8 +57,11 @@ for base, _dirs, names in os.walk(root):
         st = os.lstat(path)
         if os.path.islink(path) or not os.path.isfile(path):
             raise SystemExit("artifact is not a regular file: " + rel)
+        digest = hashlib.sha256()
         with open(path, "rb") as handle:
-            digest = hashlib.sha256(handle.read()).hexdigest()
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest = digest.hexdigest()
         files.append({"path": rel, "sha256": digest, "size_bytes": st.st_size})
         total += st.st_size
 files.sort(key=lambda item: item["path"])

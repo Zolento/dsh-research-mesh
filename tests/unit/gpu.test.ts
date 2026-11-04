@@ -22,24 +22,38 @@ async function fixture(probe?: InstanceType<typeof StaticGpuProbe>) {
   return { project, service, task, attemptId: claim.attemptId };
 }
 
-test('GPU 0 and GPU 1 lease independently and a third exclusive job waits', async () => {
+test('two tasks lease GPU 0 and GPU 1 independently', async () => {
   const { project, service, task, attemptId } = await fixture();
   try {
+    const secondTask = service.submitTask({
+      projectId: 'proj-a', teamId: task.teamId, type: 'local', title: 'gpu-holder-2',
+      payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+    }).task;
+    const secondClaim = service.claimNext();
+    assert.ok(secondClaim !== undefined);
     const first = await service.acquireGpu({
       workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0,
     });
     const second = await service.acquireGpu({
-      workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 1,
+      workerId: 'workstation', taskId: secondTask.taskId, jobId: 'job-2', attemptId: secondClaim.attemptId, gpuId: 1,
     });
     assert.equal(first.lease.gpuId, 0);
     assert.equal(second.lease.gpuId, 1);
-    await assert.rejects(
-      () => service.acquireGpu({
-        workerId: 'workstation', taskId: task.taskId, jobId: 'job-3', attemptId,
-      }),
-      (error: unknown) => error instanceof MeshError && error.code === 'GPU_UNAVAILABLE',
-    );
     assert.equal(service.listGpuLeases('workstation').filter(lease => lease.state === 'active').length, 2);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('one task can never hold two GPU leases', async () => {
+  const { project, service, task, attemptId } = await fixture();
+  try {
+    await service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0 });
+    await assert.rejects(
+      () => service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 1 }),
+      (error: unknown) => error instanceof MeshError && error.code === 'GPU_LEASE_CONFLICT',
+    );
   } finally {
     await service.close();
     project.cleanup();

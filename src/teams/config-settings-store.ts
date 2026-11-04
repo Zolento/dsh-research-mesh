@@ -45,10 +45,19 @@ export class ConfigModelSettingsStore implements ModelSettingsStore {
   }
 
   read(): ModelSettingsDocument {
-    if (this.#cache !== null) return this.#cache;
     const value = this.#unwrap();
-    if (value === undefined || value === null) return { version: 1, groups: {} };
-    return validateModelDocument(value);
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)
+      && Object.keys(value as Record<string, unknown>).length === 0) {
+      return this.#cache ?? { version: 1, groups: {} };
+    }
+    if (value !== undefined && value !== null) {
+      const current = validateModelDocument(value);
+      // Another DSH surface may have written a newer revision. Prefer the live
+      // volatile value unless this store's just-written cache is still newer
+      // than the not-yet-propagated ref.
+      if (this.#cache === null || current.version >= this.#cache.version) this.#cache = current;
+    }
+    return this.#cache ?? { version: 1, groups: {} };
   }
 
   async write(document: ModelSettingsDocument): Promise<ModelSettingsDocument> {

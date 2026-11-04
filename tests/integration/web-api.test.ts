@@ -48,6 +48,12 @@ test('bootstrap, project creation, workbench and same-origin mutation protection
     assert.equal(created.ok, true);
     assert.equal(created.value.projectId.length > 0, true);
 
+    const unknownGroup = await fetch(`${base}/dsh-research-mesh/api/groups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'proj_missing', routeId: 'A', name: 'orphan' }),
+    });
+    assert.equal(unknownGroup.status, 404);
     const team = await service.createTeam({ projectId: created.value.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
     const workbenchResponse = await (await fetch(`${base}/dsh-research-mesh/api/workbench?projectId=${created.value.projectId}`)).json() as { ok: boolean; value: { project: { name: string }; groups: unknown[]; rsi: { available: boolean } } };
     assert.equal(workbenchResponse.ok, true);

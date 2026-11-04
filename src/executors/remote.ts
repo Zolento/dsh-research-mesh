@@ -6,7 +6,7 @@
  * the only substituted boundary.
  */
 
-import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { MeshError } from '../errors.ts';
 import type { MeshConfig } from '../config/types.ts';
@@ -63,6 +63,7 @@ export class RemoteJobExecutor {
   readonly #manifestsRoot: string;
   readonly #outcomesRoot: string;
   readonly #logger: MeshLogger;
+  readonly #inFlight = new Map<string, Promise<SubmitResult>>();
 
   /**
    * @param options - resolved dependencies.
@@ -91,6 +92,19 @@ export class RemoteJobExecutor {
    * @returns submit outcome.
    */
   async submit(task: MeshTaskView, manifest: JobManifest): Promise<SubmitResult> {
+    const key = manifest.job_id;
+    const running = this.#inFlight.get(key);
+    if (running !== undefined) return running;
+    const submission = this.#submitOnce(task, manifest);
+    this.#inFlight.set(key, submission);
+    try {
+      return await submission;
+    } finally {
+      this.#inFlight.delete(key);
+    }
+  }
+
+  async #submitOnce(task: MeshTaskView, manifest: JobManifest): Promise<SubmitResult> {
     if (task.attemptId === null) throw new MeshError('TASK_STATE_INVALID', 'task has no active attempt', { taskId: task.taskId });
     const validated = validateManifest(manifest, this.#config, {
       expectedJobId: manifest.job_id,
@@ -131,6 +145,40 @@ export class RemoteJobExecutor {
     };
     if (existing === undefined) this.#store.insertJob(persisted);
 
+    // A prior controller may already have submitted this exact job. Read the
+    // remote state BEFORE taking a GPU lease so an adopted run cannot leak one.
+    let preState;
+    try {
+      preState = await this.#transport.readState(jobDir);
+    } catch (error) {
+      const meshError = error instanceof MeshError ? error : new MeshError('REMOTE_STATE_UNKNOWN', String(error));
+      // We could not prove whether a previous controller submitted this job.
+      // Never mark it failed (which would permit a resubmit); ask for reconcile.
+      this.#store.updateJob(validated.job_id, {
+        status: 'reconcile_required',
+        errorCode: 'REMOTE_STATE_UNKNOWN',
+        errorMessage: meshError.message,
+      });
+      const queued = this.#scheduler.markRemote(task.taskId, 'RECONCILE_REQUIRED', {
+        jobId: validated.job_id,
+        errorCode: 'REMOTE_STATE_UNKNOWN',
+        errorMessage: meshError.message,
+      });
+      return { jobId: validated.job_id, status: 'reconcile_required', task: queued, reconcileRequired: true };
+    }
+    if (preState !== null) {
+      this.#store.updateJob(validated.job_id, { status: 'submitted', submittedAt: nowIso() });
+      const adopted = await this.query(validated.job_id);
+      const current = this.#store.getJob(validated.job_id);
+      this.#store.appendEvent('job', validated.job_id, 'adopted-existing-remote-state', { status: preState.status });
+      return {
+        jobId: validated.job_id,
+        status: current?.status ?? 'submitted',
+        task: adopted,
+        reconcileRequired: current?.status === 'reconcile_required',
+      };
+    }
+
     let leaseId: string | null = null;
     if (validated.resources.gpu_id !== null) {
       try {
@@ -144,6 +192,17 @@ export class RemoteJobExecutor {
         leaseId = acquired.lease.leaseId;
       } catch (error) {
         const meshError = error instanceof MeshError ? error : new MeshError('GPU_UNAVAILABLE', String(error));
+        if (meshError.code === 'GPU_LEASE_CONFLICT' && this.#store.listLeases(task.taskId)
+          .some(lease => lease.state === 'active' || lease.state === 'reserved')) {
+          // A concurrent submit already owns this task's GPU lease. Do not fail
+          // the task from the losing submit; let the owner finish.
+          return {
+            jobId: validated.job_id,
+            status: existing?.status ?? 'prepared',
+            task: this.#scheduler.get(task.taskId),
+            reconcileRequired: false,
+          };
+        }
         const blocked = this.#scheduler.block(task.taskId, task.attemptId, meshError.code, meshError.message);
         this.#store.updateJob(validated.job_id, { status: 'failed', errorCode: meshError.code, errorMessage: meshError.message });
         return { jobId: validated.job_id, status: 'failed', task: blocked, reconcileRequired: false };
@@ -151,21 +210,6 @@ export class RemoteJobExecutor {
     }
 
     try {
-      const state = await this.#transport.readState(jobDir);
-      if (state !== null) {
-        // A previous controller may have submitted this exact job. Adopt the
-        // remote state; never start a second process for the same attempt.
-        this.#store.updateJob(validated.job_id, { status: 'submitted', submittedAt: nowIso() });
-        const adopted = await this.query(validated.job_id);
-        const current = this.#store.getJob(validated.job_id);
-        this.#store.appendEvent('job', validated.job_id, 'adopted-existing-remote-state', { status: state.status });
-        return {
-          jobId: validated.job_id,
-          status: current?.status ?? 'submitted',
-          task: adopted,
-          reconcileRequired: current?.status === 'reconcile_required',
-        };
-      }
       await this.#stage(validated, worker.workerId, jobDir);
       const submitted = await this.#transport.submit(jobDir, wrapperPath(jobDir), 60_000);
       this.#store.updateJob(validated.job_id, {
@@ -246,6 +290,7 @@ export class RemoteJobExecutor {
         errorCode: 'REMOTE_STATE_MISMATCH',
         errorMessage: 'remote state does not match the persisted job',
       });
+      this.#quarantineForJob(jobId, 'remote state does not match the persisted job');
       return this.#scheduler.markRemote(job.taskId, 'RECONCILE_REQUIRED', {
         jobId,
         errorCode: 'REMOTE_STATE_MISMATCH',
@@ -339,6 +384,9 @@ export class RemoteJobExecutor {
     this.#validateArtifactManifest(artifactManifest, job, manifest);
     const staging = join(this.#artifactsRoot, jobId, `${job.attemptId}.staging`);
     const final = join(this.#artifactsRoot, jobId, job.attemptId);
+    // The staging directory is Mesh-owned. Clear leftover bytes from a prior
+    // failed transfer so stale files can never be promoted into the final set.
+    rmSync(staging, { recursive: true, force: true });
     mkdirSync(staging, { recursive: true, mode: 0o700 });
     try {
       for (const file of artifactManifest.files) {
@@ -389,18 +437,27 @@ export class RemoteJobExecutor {
       sizeBytes: file.size_bytes,
     }));
     const manifestDigest = sha256Text(JSON.stringify(artifactManifest));
-    for (const artifact of artifacts) {
-      this.#store.insertArtifact({
-        artifactId: `artifact_${jobId}_${artifact.path.replace(/[^A-Za-z0-9._-]/g, '_')}`,
-        jobId,
-        attemptId: job.attemptId,
-        relativePath: artifact.path,
-        sha256: artifact.sha256,
-        sizeBytes: artifact.sizeBytes,
-        createdAt: nowIso(),
+    try {
+      this.#store.transaction(() => {
+        for (const [index, artifact] of artifacts.entries()) {
+          this.#store.insertArtifact({
+            artifactId: `artifact_${jobId}_${index}_${artifact.path.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+            jobId,
+            attemptId: job.attemptId,
+            relativePath: artifact.path,
+            sha256: artifact.sha256,
+            sizeBytes: artifact.sizeBytes,
+            createdAt: nowIso(),
+          });
+        }
+        this.#store.updateJob(jobId, { status: 'ingested', errorCode: null, errorMessage: null });
       });
+    } catch (error) {
+      // The DB did not accept the ingestion; keep the job ready for a clean
+      // re-download rather than leaving a half-promoted final directory.
+      rmSync(final, { recursive: true, force: true });
+      throw error;
     }
-    this.#store.updateJob(jobId, { status: 'ingested', errorCode: null, errorMessage: null });
     this.#scheduler.markRemote(job.taskId, 'INGESTED', { jobId });
     const task = this.#scheduler.markRemote(job.taskId, 'ASSURANCE_PENDING', { jobId });
     this.#gpu.releaseForTask(job.taskId, 'artifacts ingested');

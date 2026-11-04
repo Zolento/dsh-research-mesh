@@ -109,6 +109,15 @@ export class GpuLeaseManager {
         gpuId: input.gpuId,
       });
     }
+    const owned = this.#store.listLeases(input.taskId)
+      .find(lease => lease.state === 'active' || lease.state === 'reserved' || lease.state === 'quarantined');
+    if (owned !== undefined) {
+      throw new MeshError('GPU_LEASE_CONFLICT', `task ${input.taskId} already owns a GPU lease`, {
+        taskId: input.taskId,
+        leaseId: owned.leaseId,
+        gpuId: owned.gpuId,
+      });
+    }
     if (this.#store.countBlockingLeases(worker.workerId) >= worker.maxGpuJobs) {
       throw new MeshError('GPU_UNAVAILABLE', `worker ${worker.workerId} already has ${worker.maxGpuJobs} blocking GPU leases`, {
         workerId: worker.workerId,

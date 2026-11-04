@@ -20,13 +20,17 @@ Commit: `3271774` plus the delivery-status follow-up
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit | 45 | pass |
+| Unit | 63 | pass |
 | Integration | 6 | pass |
 | End-to-end + fault injection | 3 | pass |
-| **Total** | **54** | **pass, 0 fail, 0 skip** |
+| **Total** | **72** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |
+
+Group-control audit (destroyed-group quota, project pause drift, Captain rollback,
+member binding ownership, GPU double-lease, artifact ingestion, remote retry):
+[HARNESS-AUDIT.md](HARNESS-AUDIT.md).
 
 Commands actually run:
 
@@ -111,7 +115,8 @@ second collect passed; one execution.
    width; the full-width Models view inside Research Mesh is the mobile path. DSH does
    not expose a third-party settings-section icon, so the generic gear is used.
 9. **Pause semantics.** Pausing parks the project's groups (no new claims) and leaves
-   running jobs untouched. There is no separate "stop team" action in the UI.
+   running jobs untouched. Manually paused groups stay paused across project resume;
+   there is no separate "stop team" action in the UI.
 10. **Deletion/lifecycle.** Project deletion, worktree cleanup and forced remote-job
    cancellation are API-only or intentionally absent from the main UI; irreversible
    actions are not presented as one-click controls.

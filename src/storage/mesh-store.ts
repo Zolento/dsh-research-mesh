@@ -169,6 +169,11 @@ CREATE TABLE IF NOT EXISTS mesh_projects (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mesh_project_pauses (
+  project_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  PRIMARY KEY (project_id, team_id)
+);
 CREATE TABLE IF NOT EXISTS mesh_session_bindings (
   binding_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES mesh_projects(project_id),
@@ -498,6 +503,27 @@ export class MeshStore {
         .run(detachedAt, sessionId);
       const changes = result.changes;
       return typeof changes === 'bigint' ? changes > 0n : changes > 0;
+    });
+  }
+
+  // -- project pause bookkeeping -------------------------------------------
+
+  recordProjectPauses(projectId: string, teamIds: readonly string[]): void {
+    if (teamIds.length === 0) return;
+    this.#store.transaction(db => {
+      const statement = db.prepare('INSERT OR IGNORE INTO mesh_project_pauses (project_id, team_id) VALUES (?, ?)');
+      for (const teamId of teamIds) statement.run(projectId, teamId);
+    });
+  }
+
+  listProjectPauses(projectId: string): readonly string[] {
+    return this.#store.read(db => (db.prepare('SELECT team_id FROM mesh_project_pauses WHERE project_id = ? ORDER BY team_id')
+      .all(projectId) as Row[]).map(row => text(row, 'team_id')));
+  }
+
+  clearProjectPauses(projectId: string): void {
+    this.#store.transaction(db => {
+      db.prepare('DELETE FROM mesh_project_pauses WHERE project_id = ?').run(projectId);
     });
   }
 

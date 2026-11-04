@@ -1,10 +1,12 @@
 /**
  * Root-session binding for groups.
  *
- * Production uses the host's real `ctx.agents` service so each group owns a DSH
- * root session and each Mesh subagent identity is a real DSH child agent. The
- * Mesh never invents a chat log; session persistence, context and model routing
- * stay with DSH.
+ * Production uses the host's `SessionController`/`ctx.agents` services so each
+ * group owns a real DSH session and each member identity is a durable DSH
+ * session. SessionController sessions are workspace-backed and Web-openable;
+ * the AgentRegistry fallback can create a true child agent when no controller
+ * is available. The Mesh never invents a chat log; session persistence, context
+ * and model routing stay with DSH.
  */
 
 import { MeshError } from '../errors.ts';
@@ -130,6 +132,15 @@ export class DshSessionHost implements SessionHost {
     this.#workspaceController = controller;
   }
 
+  #discardControllerSession(sessionId: string, reason: string): void {
+    this.#controllerSessions.delete(sessionId);
+    try {
+      this.#ctx.agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-controller-failure', reason });
+    } catch {
+      // Session persistence remains; no better cleanup primitive is exposed.
+    }
+  }
+
   /**
    * @param ctx - host context exposing `agents`.
    */
@@ -168,11 +179,16 @@ export class DshSessionHost implements SessionHost {
         }
       }
       const created = await controller.create(workspaceId === undefined ? { cwd: input.cwd } : { workspaceId });
-      await controller.selectModel({
-        sessionId: created.sessionId,
-        provider: input.provider,
-        model: input.model,
-      });
+      try {
+        await controller.selectModel({
+          sessionId: created.sessionId,
+          provider: input.provider,
+          model: input.model,
+        });
+      } catch (error) {
+        this.#discardControllerSession(created.sessionId, 'root model selection failed');
+        throw error;
+      }
       this.#controllerSessions.add(created.sessionId);
       return { sessionId: created.sessionId };
     }
@@ -217,11 +233,16 @@ export class DshSessionHost implements SessionHost {
         }
       }
       const created = await controller.create(workspaceId === undefined ? { cwd: input.cwd } : { workspaceId });
-      await controller.selectModel({
-        sessionId: created.sessionId,
-        provider: input.provider,
-        model: input.model,
-      });
+      try {
+        await controller.selectModel({
+          sessionId: created.sessionId,
+          provider: input.provider,
+          model: input.model,
+        });
+      } catch (error) {
+        this.#discardControllerSession(created.sessionId, 'root model selection failed');
+        throw error;
+      }
       this.#controllerSessions.add(created.sessionId);
       return { sessionId: created.sessionId };
     }
@@ -236,27 +257,15 @@ export class DshSessionHost implements SessionHost {
   }
 
   async createSubagent(input: CreateSubagentIdentityInput): Promise<{ sessionId: string }> {
-    const agents = this.#ctx.agents;
-    if (agents === undefined) {
-      throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot create a subagent', {
-        teamId: input.teamId,
-      });
-    }
     if (input.provider === undefined || input.model === undefined) {
       throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'agent.provider and agent.model are required to create a DSH subagent', {
         teamId: input.teamId,
       });
     }
-    const rootHandle = this.#handles.get(input.rootSessionId);
-    const parentAgent = rootHandle?.agent ?? agents.get?.(input.rootSessionId);
-    if (parentAgent === undefined) {
-      throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'root session is not live in this runtime', {
-        teamId: input.teamId,
-        rootSessionId: input.rootSessionId,
-      });
-    }
     const controller = this.#sessionController;
     if (controller !== undefined) {
+      // SessionController-owned member sessions survive a restart without
+      // requiring the Captain Agent to be live first.
       let workspaceId: string | undefined;
       if (this.#workspaceController !== undefined) {
         try {
@@ -267,13 +276,32 @@ export class DshSessionHost implements SessionHost {
         }
       }
       const created = await controller.create(workspaceId === undefined ? { cwd: input.cwd } : { workspaceId });
-      await controller.selectModel({
-        sessionId: created.sessionId,
-        provider: input.provider,
-        model: input.model,
-      });
+      try {
+        await controller.selectModel({
+          sessionId: created.sessionId,
+          provider: input.provider,
+          model: input.model,
+        });
+      } catch (error) {
+        this.#discardControllerSession(created.sessionId, 'member model selection failed');
+        throw error;
+      }
       this.#controllerSessions.add(created.sessionId);
       return { sessionId: created.sessionId };
+    }
+    const agents = this.#ctx.agents;
+    if (agents === undefined) {
+      throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot create a subagent', {
+        teamId: input.teamId,
+      });
+    }
+    const rootHandle = this.#handles.get(input.rootSessionId);
+    const parentAgent = rootHandle?.agent ?? agents.get?.(input.rootSessionId);
+    if (parentAgent === undefined) {
+      throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'root session is not live in this runtime', {
+        teamId: input.teamId,
+        rootSessionId: input.rootSessionId,
+      });
     }
     const sessionId = `mesh-${requireSlug(input.name, 'subagent name')}-${newId(ID_PREFIX.subagent).slice(-13)}`;
     const handle = await agents.create({
@@ -330,7 +358,13 @@ export class DshSessionHost implements SessionHost {
    */
   async disposeRoot(sessionId: string): Promise<void> {
     if (this.#controllerSessions.delete(sessionId)) {
-      // SessionController owns the live Agent; the durable Session is retained.
+      // Stop the live Agent but retain the durable Session and its history.
+      const resumedHandle = this.#handles.get(sessionId);
+      if (resumedHandle !== undefined) {
+        this.#handles.delete(sessionId);
+        try { await resumedHandle.dispose(); } catch { /* retain */ }
+      }
+      try { this.#ctx.agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-group-disposed' }); } catch { /* retain */ }
       return;
     }
     const handle = this.#handles.get(sessionId);
@@ -341,6 +375,8 @@ export class DshSessionHost implements SessionHost {
 
   /** Release every live handle owned by this host. */
   async disposeAll(): Promise<void> {
+    // SessionController owns these Agents. Plugin reload must not cancel live
+    // research conversations; explicit group destruction disposes one session.
     this.#controllerSessions.clear();
     const handles = [...this.#handles.values()];
     this.#handles.clear();

@@ -49,6 +49,7 @@ import { newWorkerId } from './util/ids.ts';
 export interface MeshHostServices {
   readonly agents?: DshHostContext['agents'];
   readonly sessionController?: DshHostContext['sessionController'];
+  readonly workspaceController?: DshHostContext['workspaceController'];
   readonly llm?: DshLlmLike;
 }
 
@@ -298,18 +299,41 @@ export class MeshService {
     return this.#requireProjects().get(projectId);
   }
 
+  /** Reconcile group state with persisted project pause/archive state. */
+  reconcileProjectPauses(): void {
+    this.#requireReady();
+    for (const project of this.#requireProjects().list()) {
+      if (project.status === 'paused' || project.status === 'archived' || project.status === 'registered') {
+        const active = this.#requireTeams().list(project.projectId).filter(team => team.status === 'active');
+        this.#requireStore().recordProjectPauses(project.projectId, active.map(team => team.teamId));
+        for (const team of active) this.#requireTeams().pause(team.teamId);
+      } else if (project.status === 'active') {
+        const parked = this.#requireStore().listProjectPauses(project.projectId);
+        for (const teamId of parked) {
+          const team = this.#requireTeams().list(project.projectId).find(candidate => candidate.teamId === teamId);
+          if (team !== undefined && team.status === 'paused') this.#requireTeams().resume(teamId);
+        }
+        this.#requireStore().clearProjectPauses(project.projectId);
+      }
+    }
+  }
+
   setProjectStatus(projectId: string, status: import('./storage/types.ts').MeshProjectStatus): ProjectView {
     const project = this.#requireProjects().setStatus(projectId, status);
-    // Pausing a project parks new claims through its groups; running jobs are
-    // deliberately untouched. Resuming restores the groups in the same call.
-    if (status === 'paused') {
-      for (const team of this.#requireTeams().list(projectId)) {
-        if (team.status === 'active') this.#requireTeams().pause(team.teamId);
-      }
+    // Pausing or archiving a project parks new claims through the groups that
+    // were active. Running jobs are untouched. Only groups parked by the project
+    // are restored on resume; a manually paused group stays paused.
+    if (status === 'paused' || status === 'archived' || status === 'registered') {
+      const active = this.#requireTeams().list(projectId).filter(team => team.status === 'active');
+      this.#requireStore().recordProjectPauses(projectId, active.map(team => team.teamId));
+      for (const team of active) this.#requireTeams().pause(team.teamId);
     } else if (status === 'active') {
-      for (const team of this.#requireTeams().list(projectId)) {
-        if (team.status === 'paused') this.#requireTeams().resume(team.teamId);
+      const parked = this.#requireStore().listProjectPauses(projectId);
+      for (const teamId of parked) {
+        const team = this.#requireTeams().list(projectId).find(candidate => candidate.teamId === teamId);
+        if (team !== undefined && team.status === 'paused') this.#requireTeams().resume(teamId);
       }
+      this.#requireStore().clearProjectPauses(projectId);
     }
     return project;
   }
@@ -343,18 +367,28 @@ export class MeshService {
       teamId: `control-${projectId}`,
       projectId,
       name: project.name,
-      cwd: this.#config.projectRoot,
+      cwd: project.repositoryRef,
       title: project.name,
       provider,
       model,
     });
-    this.#requireProjects().bind(projectId, created.sessionId, 'control');
+    try {
+      this.#requireProjects().bind(projectId, created.sessionId, 'control');
+    } catch (error) {
+      try { await this.#requireTeams().sessionHost.disposeRoot(created.sessionId); } catch { /* retain original */ }
+      throw error;
+    }
     this.#store?.appendEvent('project', projectId, 'control-session-created', { sessionId: created.sessionId });
     return { sessionId: created.sessionId, projectId };
   }
 
   attachSession(projectId: string, sessionId: string): import('./storage/types.ts').MeshSessionBinding {
     return this.#requireProjects().bind(projectId, sessionId, 'control');
+  }
+
+  /** Explicitly bind a member identity to a group (used by control-plane clients). */
+  attachMemberSession(projectId: string, teamId: string, sessionId: string): import('./storage/types.ts').MeshSessionBinding {
+    return this.#requireProjects().bind(projectId, sessionId, 'member', teamId);
   }
 
   detachSession(sessionId: string): boolean {
@@ -375,6 +409,7 @@ export class MeshService {
     const project = this.#requireProjects().get(projectId);
     const groups: WorkbenchGroup[] = [];
     for (const team of this.#requireTeams().list(projectId)) {
+      if (team.status === 'destroyed') continue;
       const subagents = this.#requireTeams().listSubagents(team.teamId);
       const agentModels = subagents.map(subagent => this.#requireStore().getAgentModel(subagent.sessionId))
         .filter((record): record is import('./storage/types.ts').AgentModelRecord => record !== undefined);
@@ -535,10 +570,40 @@ export class MeshService {
 
 
 
+  /**
+   * Create a group from the control-plane API. Unlike the lower-level
+   * `createTeam` used by deterministic tests, this requires a registered,
+   * runnable, active project and therefore cannot create an orphan group.
+   */
+  async createGroup(input: CreateTeamInput): Promise<TeamView> {
+    const project = this.#requireProjects().get(input.projectId);
+    this.#requireProjects().assertRunnable(input.projectId);
+    if (!project.rsiReadable) {
+      throw new MeshError('RSI_STATE_UNAVAILABLE', 'the project RSI state is not readable', {
+        projectId: input.projectId,
+        error: project.rsiError,
+      });
+    }
+    if (project.status !== 'active') {
+      throw new MeshError('TEAM_STATE_INVALID', 'project is not active; resume it before creating a group', {
+        projectId: input.projectId,
+        status: project.status,
+      });
+    }
+    return this.createTeam(input);
+  }
+
   async createTeam(input: CreateTeamInput): Promise<TeamView> {
     const projects = this.#projects;
     if (projects !== null && projects.list().some(project => project.projectId === input.projectId)) {
-      const project = projects.assertRunnable(input.projectId);
+      projects.assertRunnable(input.projectId);
+      const project = projects.get(input.projectId);
+      if (!project.rsiReadable) {
+        throw new MeshError('RSI_STATE_UNAVAILABLE', 'the project RSI state is not readable', {
+          projectId: input.projectId,
+          error: project.rsiError,
+        });
+      }
       if (project.status !== 'active') {
         throw new MeshError('TEAM_STATE_INVALID', 'project is not active; resume it before creating a group', { projectId: input.projectId });
       }
@@ -548,7 +613,24 @@ export class MeshService {
       try {
         projects.bind(input.projectId, team.rootSessionId, 'captain', team.teamId);
       } catch (error) {
-        this.#logger.warn('captain session binding failed', { teamId: team.teamId, error: String(error) });
+        // A group without its captain binding would be unreachable from the
+        // Workbench and would still consume a slot, so retire it immediately.
+        try { await this.#requireTeams().destroy(team.teamId); } catch (cleanupError) {
+          this.#logger.error('failed to retire group after captain binding failure', {
+            teamId: team.teamId,
+            error: String(cleanupError),
+          });
+        }
+        if (team.workspaceId !== null) {
+          try { await this.#requireWorkspaces().cleanup(team.workspaceId, { confirm: true, force: true }); } catch (cleanupError) {
+            this.#logger.error('failed to clean up worktree after captain binding failure', {
+              teamId: team.teamId,
+              workspaceId: team.workspaceId,
+              error: String(cleanupError),
+            });
+          }
+        }
+        throw error;
       }
     }
     return team;
@@ -556,6 +638,11 @@ export class MeshService {
 
   getTeam(teamId: string): TeamView {
     return this.#requireTeams().get(teamId);
+  }
+
+  /** Resume the persisted captain Session with the group's assigned model. */
+  resumeRootSession(teamId: string): Promise<void> {
+    return this.#requireTeams().resumeRootSession(teamId);
   }
 
   listTeams(projectId?: string): readonly TeamView[] {
@@ -571,7 +658,15 @@ export class MeshService {
   }
 
   async destroyTeam(teamId: string): Promise<TeamView> {
-    return this.#requireTeams().destroy(teamId);
+    const team = this.#requireTeams().get(teamId);
+    const destroyed = await this.#requireTeams().destroy(teamId);
+    // Bindings are Mesh management state too; leaving them active would pin
+    // the sessions to a destroyed group and block reuse.
+    if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
+      this.#projects.detach(team.rootSessionId);
+      for (const subagent of this.#requireTeams().listSubagents(teamId)) this.#projects.detach(subagent.sessionId);
+    }
+    return destroyed;
   }
 
   async registerSubagent(input: RegisterSubagentInput): Promise<SubagentView> {
@@ -581,14 +676,23 @@ export class MeshService {
       try {
         this.#projects.bind(team.researchProjectId, subagent.sessionId, 'member', input.teamId);
       } catch (error) {
-        this.#logger.warn('member session binding failed', { teamId: input.teamId, error: String(error) });
+        // A partially registered member without a project binding is not a
+        // usable Mesh identity; release it before surfacing the failure.
+        try { this.#requireTeams().releaseSubagent(input.teamId, subagent.sessionId); } catch { /* retain original */ }
+        throw error;
       }
     }
     return subagent;
   }
 
   releaseSubagent(teamId: string, sessionId: string): void {
+    const team = this.#requireTeams().get(teamId);
     this.#requireTeams().releaseSubagent(teamId, sessionId);
+    // A released identity must not keep an active member binding, otherwise it
+    // could never be re-registered in another group.
+    if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
+      this.#projects.detach(sessionId);
+    }
   }
 
   listSubagents(teamId: string): readonly SubagentView[] {
@@ -669,6 +773,11 @@ export class MeshService {
 
   claimNext(workerId?: string): ClaimedTask | undefined {
     return this.#requireScheduler().claimNext(workerId ?? this.#requireWorkerId());
+  }
+
+  /** Claim one named task through the explicit scheduler path. */
+  claimTask(taskId: string, workerId?: string): ClaimedTask {
+    return this.#requireScheduler().claimTask(taskId, workerId ?? this.#requireWorkerId());
   }
 
   startTask(taskId: string, workerId: string, attemptId: string): MeshTaskView {
@@ -857,6 +966,7 @@ export class MeshService {
 
   async #startupRecovery(): Promise<void> {
     try {
+      this.reconcileProjectPauses();
       const scheduler = this.#requireScheduler().recover();
       const jobs = this.#requireJobs().recover();
       const gpu = this.#requireGpu().reconcile();
@@ -877,7 +987,11 @@ export class MeshService {
 
   #createSessionHost(): SessionHost {
     if (this.#config.sessionBinding === 'external') return new ExternalSessionHost();
-    return new DshSessionHost({ agents: this.#host.agents, ...(this.#host.sessionController === undefined ? {} : { sessionController: this.#host.sessionController }) });
+    return new DshSessionHost({
+      agents: this.#host.agents,
+      ...(this.#host.sessionController === undefined ? {} : { sessionController: this.#host.sessionController }),
+      ...(this.#host.workspaceController === undefined ? {} : { workspaceController: this.#host.workspaceController }),
+    });
   }
 
   #createCatalog(): ModelCatalog {

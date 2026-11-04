@@ -42,6 +42,11 @@ const STATUS_FOR: Readonly<Record<string, number>> = {
   RSI_STATE_UNAVAILABLE: 409,
   RSI_INVALID: 409,
   TEAM_LIMIT: 409,
+  TEAM_CONFLICT: 409,
+  TEAM_STATE_INVALID: 409,
+  SUBAGENT_BUSY: 409,
+  GPU_LEASE_CONFLICT: 409,
+  EXECUTOR_DISABLED: 409,
   SUBAGENT_LIMIT: 409,
   GPU_UNAVAILABLE: 409,
 };
@@ -202,7 +207,14 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         const projectId = stringField(body, 'projectId');
         const name = stringField(body, 'name');
         const routeId = stringField(body, 'routeId');
-        const team = await service.createTeam({ projectId, routeId, name });
+        const rootSessionId = body.rootSessionId;
+        if (rootSessionId !== undefined && (typeof rootSessionId !== 'string' || rootSessionId.trim() === '')) {
+          throw new MeshError('INVALID_ARGUMENT', 'rootSessionId must be a non-empty string');
+        }
+        const team = await service.createGroup({
+          projectId, routeId, name,
+          ...(typeof rootSessionId === 'string' ? { rootSessionId } : {}),
+        });
         send(res, 200, { ok: true, value: team });
         return;
       }
@@ -214,10 +226,15 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         if (!['discovery', 'theory', 'literature', 'experiment', 'assurance', 'synthesis'].includes(role)) {
           throw new MeshError('INVALID_ARGUMENT', 'invalid subagent role');
         }
+        const sessionId = body.sessionId;
+        if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.trim() === '')) {
+          throw new MeshError('INVALID_ARGUMENT', 'sessionId must be a non-empty string');
+        }
         const subagent = await service.registerSubagent({
           teamId,
           name,
           role: role as 'discovery' | 'theory' | 'literature' | 'experiment' | 'assurance' | 'synthesis',
+          ...(typeof sessionId === 'string' ? { sessionId } : {}),
         });
         send(res, 200, { ok: true, value: subagent });
         return;

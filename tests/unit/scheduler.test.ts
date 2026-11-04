@@ -148,6 +148,46 @@ test('blocked and failed tasks can be retried or cancelled explicitly', async ()
   }
 });
 
+test('a finished task leaves no stale current-task pointer on its group', async () => {
+  const project = makeTempProject();
+  const { service, teamId } = await team(project);
+  try {
+    const task = service.submitTask(local(teamId, 'tracked')).task;
+    assert.equal(service.getTeam(teamId).currentTaskId, null);
+    const round = await service.runWorkerOnce();
+    assert.equal(round.task?.status, 'SUCCEEDED');
+    assert.equal(service.getTeam(teamId).currentTaskId, null);
+    const cancelled = service.submitTask(local(teamId, 'cancel-me')).task;
+    service.cancelTask(cancelled.taskId, 'test');
+    assert.equal(service.getTeam(teamId).currentTaskId, null);
+    void task;
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('direct claim honours the per-team concurrency limit', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project, {
+    config: { limits: { maxConcurrentTasksPerTeam: 1, maxConcurrentTasks: 4 } },
+  });
+  const teamId = (await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a', rootSessionId: 'root-a' })).teamId;
+  try {
+    const first = service.submitTask(local(teamId, 'first')).task;
+    const second = service.submitTask(local(teamId, 'second')).task;
+    assert.equal(service.claimNext()?.task.taskId, first.taskId);
+    assert.throws(
+      () => service.claimTask(second.taskId),
+      (error: unknown) => error instanceof MeshError && error.code === 'TASK_NOT_CLAIMABLE',
+    );
+    assert.equal(service.getTask(second.taskId).status, 'READY');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
 test('expired local leases are failed, never replayed silently', async () => {
   const project = makeTempProject();
   const { service, teamId } = await team(project);

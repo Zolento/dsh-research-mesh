@@ -218,9 +218,10 @@ export class ModelResolver {
    * @param slot - subagent name or slot.
    * @returns resolved model.
    */
-  async resolveSubagent(groupName: string, slot: string): Promise<ResolvedModel> {
+  async resolveSubagent(groupName: string, slot: string, ordinal?: number): Promise<ResolvedModel> {
     const group = this.#store.read().groups[groupName];
-    const choice = group?.subagents?.[slot];
+    const choice = group?.subagents?.[slot]
+      ?? (ordinal === undefined ? undefined : group?.subagents?.[`subagent-${ordinal}`]);
     if (choice !== undefined && choice !== 'inherit') {
       return this.#validate(choice, 'subagent-override', groupName);
     }
@@ -235,7 +236,20 @@ export class ModelResolver {
   async save(value: unknown): Promise<ModelSettingsDocument> {
     const document = validateModelDocument(value);
     for (const [groupName, group] of Object.entries(document.groups)) {
-      if (group.default !== undefined) await this.#assertLive(group.default, `groups.${groupName}.default`);
+      if (group.default === undefined) {
+        const hasOverride = (group.captain !== undefined && group.captain !== 'inherit')
+          || Object.values(group.subagents ?? {}).some(choice => choice !== 'inherit');
+        if (hasOverride) {
+          throw new MeshError('MODEL_CONFIG_INVALID', `group ${groupName} has overrides but no default provider/model`, {
+            groupName,
+            configVersion: this.#version,
+          });
+        }
+        // An untouched group is intentionally empty; it still falls back to the
+        // plugin-level agent route until the user assigns a default.
+        continue;
+      }
+      await this.#assertLive(group.default, `groups.${groupName}.default`);
       if (group.captain !== undefined && group.captain !== 'inherit') {
         this.#assertLive(group.captain, `groups.${groupName}.captain`);
       }

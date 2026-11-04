@@ -17,7 +17,7 @@ export const ModelChoiceSchema = z.object({
 
 /** One group's manual model assignment. */
 export const GroupAssignmentSchema = z.object({
-  default: ModelChoiceSchema,
+  default: z.union([ModelChoiceSchema, z.const(undefined)]),
   captain: z.union([ModelChoiceSchema, z.const('inherit' as const)]).default('inherit'),
   subagents: z.dict(z.union([ModelChoiceSchema, z.const('inherit' as const)])).default({}),
 });

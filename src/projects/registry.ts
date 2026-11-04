@@ -7,7 +7,7 @@
  * created by the Team Manager when the corresponding Session exists.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative as relativePath, resolve } from 'node:path';
 import { MeshError } from '../errors.ts';
 import type { MeshConfig } from '../config/types.ts';
@@ -89,9 +89,19 @@ export class ProjectRegistry {
     }
     const existing = this.#store.getProjectByState(rsiStateRef);
     if (existing !== undefined) return this.view(existing);
-    const relativeState = relativePath(this.#config.projectRoot, rsiStateRef);
-    const stateInsideRuntime = !relativeState.startsWith('..') && !isAbsolute(relativeState);
-    const runnable = stateInsideRuntime && repositoryRef === resolve(this.#config.sourceDir);
+    let stateInsideRuntime = false;
+    try {
+      const relativeState = relativePath(realpathSync(this.#config.projectRoot), realpathSync(rsiStateRef));
+      stateInsideRuntime = !relativeState.startsWith('..') && !isAbsolute(relativeState);
+    } catch {
+      stateInsideRuntime = false;
+    }
+    let runnable = false;
+    try {
+      runnable = stateInsideRuntime && realpathSync(repositoryRef) === realpathSync(this.#config.sourceDir);
+    } catch {
+      runnable = false;
+    }
     const now = nowIso();
     const record: MeshProjectRecord = {
       projectId: newId(ID_PREFIX.project),
@@ -159,10 +169,13 @@ export class ProjectRegistry {
         sessionId, projectId: existing.projectId, role: existing.role,
       });
     }
-    if (role === 'captain' && groupId !== null) {
+    if ((role === 'captain' || role === 'member') && groupId !== null) {
       const group = this.#store.getGroup(groupId);
       if (group === undefined || group.projectId !== projectId) {
-        throw new MeshError('TEAM_NOT_FOUND', 'captain binding names a group outside this project', { projectId, groupId });
+        throw new MeshError('TEAM_NOT_FOUND', `${role} binding names a group outside this project`, { projectId, groupId });
+      }
+      if (group.status === 'destroyed') {
+        throw new MeshError('TEAM_STATE_INVALID', 'cannot bind a session to a destroyed group', { projectId, groupId });
       }
     }
     const binding: MeshSessionBinding = {
@@ -206,7 +219,7 @@ export class ProjectRegistry {
     }
     return {
       ...record,
-      groupCount: groups.length,
+      groupCount: groups.filter(group => group.status !== 'destroyed').length,
       activeGroupCount: groups.filter(group => group.status === 'active').length,
       rsiReadable,
       rsiVersion,

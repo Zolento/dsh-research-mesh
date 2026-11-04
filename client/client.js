@@ -335,13 +335,17 @@ window.__ModuleLoader__.load({
     function notifySessionBinding() {
       for (const listener of sessionBindingListeners) listener()
     }
+    function invalidateSessionBinding(sessionId) {
+      if (typeof sessionId === 'string') sessionBindingCache.delete(sessionId)
+      notifySessionBinding()
+    }
     function loadSessionBinding(sessionId) {
       const existing = sessionBindingCache.get(sessionId)
-      if (existing !== undefined && existing.status !== 'loading') return
-      sessionBindingCache.set(sessionId, { status: 'loading', value: null })
+      if (existing !== undefined && (existing.status === 'loading' || Date.now() - existing.at < 10_000)) return
+      sessionBindingCache.set(sessionId, { status: 'loading', value: null, at: Date.now() })
       api(`/session?sessionId=${encodeURIComponent(sessionId)}`)
-        .then(value => { sessionBindingCache.set(sessionId, { status: 'ready', value }); notifySessionBinding() })
-        .catch(error => { sessionBindingCache.set(sessionId, { status: 'error', value: null, error: error.message }); notifySessionBinding() })
+        .then(value => { sessionBindingCache.set(sessionId, { status: 'ready', value, at: Date.now() }); notifySessionBinding() })
+        .catch(error => { sessionBindingCache.set(sessionId, { status: 'error', value: null, error: error.message, at: Date.now() }); notifySessionBinding() })
     }
     function useSessionBinding(sessionId) {
       const [, setTick] = useState(0)
@@ -687,6 +691,7 @@ window.__ModuleLoader__.load({
           })
           .then(async sessionId => {
             await api('/sessions/attach', { method: 'POST', body: JSON.stringify({ projectId, sessionId }) })
+            invalidateSessionBinding(sessionId)
             try { await ctx.sessions.refresh() } catch { /* best effort */ }
             openSession(sessionId)
           })
@@ -698,7 +703,7 @@ window.__ModuleLoader__.load({
         setBusy('attach')
         setNotice(null)
         api('/sessions/attach', { method: 'POST', body: JSON.stringify({ projectId, sessionId: attach.trim() }) })
-          .then(() => { setNotice({ kind: 'ok', text: t('attachSuccess') }); setAttach(''); state.reload() })
+          .then(() => { invalidateSessionBinding(attach.trim()); setNotice({ kind: 'ok', text: t('attachSuccess') }); setAttach(''); state.reload() })
           .catch(error => setNotice({ kind: 'error', text: error.message }))
           .finally(() => setBusy(null))
       }

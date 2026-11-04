@@ -11,6 +11,7 @@ worktrees, tasks, remote jobs and the control surface.
 - Integrated bridge domain: [`docs/BRIDGE-INTEGRATION.md`](docs/BRIDGE-INTEGRATION.md)
 - Web console and model settings: [`docs/UI.md`](docs/UI.md)
 - Tests and evidence: [`docs/TESTING.md`](docs/TESTING.md)
+- Group-control harness audit and fixed bugs: [`docs/HARNESS-AUDIT.md`](docs/HARNESS-AUDIT.md)
 - Current status and limits: [`docs/STATUS.md`](docs/STATUS.md)
 
 ## What is implemented

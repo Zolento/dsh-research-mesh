@@ -148,6 +148,12 @@ export class TaskScheduler {
     }
     const group = this.#store.getGroup(input.teamId);
     if (group === undefined) throw new MeshError('TEAM_NOT_FOUND', `unknown group ${input.teamId}`, { teamId: input.teamId });
+    if (group.status !== 'active') {
+      throw new MeshError('TEAM_STATE_INVALID', 'tasks can only be submitted to an active group', {
+        teamId: input.teamId,
+        groupStatus: group.status,
+      });
+    }
     const dependencies = [...new Set(input.dependencies ?? [])];
     if (input.priority !== undefined && (!Number.isSafeInteger(input.priority) || input.priority < 0 || input.priority > 1000)) {
       throw new MeshError('INVALID_ARGUMENT', 'priority must be an integer in [0, 1000]', { priority: input.priority });
@@ -298,6 +304,7 @@ export class TaskScheduler {
     return this.#store.transaction(() => {
       const groups = this.#store.listGroups(options.projectId)
         .filter(group => group.status === 'active')
+        .filter(group => this.#store.teamStore.getTeam(group.teamId)?.status === 'active')
         .filter(group => options.teamId === undefined || group.teamId === options.teamId);
       const globalActive = this.#countActive();
       if (globalActive >= this.#config.limits.maxConcurrentTasks) return undefined;
@@ -340,6 +347,15 @@ export class TaskScheduler {
       if (!CLAIMABLE.includes(task.status)) {
         throw new MeshError('TASK_NOT_CLAIMABLE', `task ${taskId} is ${task.status}`, { taskId, status: task.status });
       }
+      const team = this.#store.teamStore.getTeam(task.team_id);
+      const group = this.#store.getGroup(task.team_id);
+      if (team?.status !== 'active' || group?.status !== 'active') {
+        throw new MeshError('TASK_NOT_CLAIMABLE', 'task group or project is not active', { taskId, teamId: task.team_id });
+      }
+      if (this.#countActive() >= this.#config.limits.maxConcurrentTasks
+        || this.#countActive(task.team_id) >= this.#config.limits.maxConcurrentTasksPerTeam) {
+        throw new MeshError('TASK_NOT_CLAIMABLE', 'concurrency limit reached', { taskId, teamId: task.team_id });
+      }
       if (task.attempt_count >= task.max_attempts) {
         throw new MeshError('TASK_NOT_CLAIMABLE', 'attempts exhausted', { taskId, attempts: task.attempt_count });
       }
@@ -380,6 +396,7 @@ export class TaskScheduler {
         revision: task.revision + 1,
         progress: { ...task.progress, startedAt: task.progress.startedAt ?? now },
       }, task.revision);
+      this.#store.updateAttempt(attemptId, { status: 'running' });
       this.#store.updateTaskMeta(taskId, { remoteStatus: null, errorCode: null, errorMessage: null, updatedAt: now });
       this.#store.appendEvent('task', taskId, 'started', { workerId, attemptId });
       return this.#view(updated, this.#requireMeta(taskId));
@@ -437,6 +454,7 @@ export class TaskScheduler {
       this.#finishAttempt(attemptId, 'succeeded');
       this.#store.updateTaskMeta(taskId, { remoteStatus: null, errorCode: null, errorMessage: null, updatedAt: now });
       this.#store.appendEvent('task', taskId, 'succeeded', { attemptId });
+      this.#clearCurrentTask(task.team_id, taskId);
       this.#refreshReadinessLocked(task.team_id);
       return this.#view(updated, this.#requireMeta(taskId));
     });
@@ -479,6 +497,7 @@ export class TaskScheduler {
         updatedAt: now,
       });
       this.#store.appendEvent('task', taskId, 'failed', { attemptId, code, retryable, exhausted });
+      this.#clearCurrentTask(task.team_id, taskId);
       if (status === 'ready') this.#refreshReadinessLocked(task.team_id);
       return this.#view(updated, this.#requireMeta(taskId));
     });
@@ -515,6 +534,7 @@ export class TaskScheduler {
       if (attemptId !== null) this.#finishAttempt(attemptId, 'blocked', code, message);
       this.#store.updateTaskMeta(taskId, { errorCode: code, errorMessage: message, updatedAt: now });
       this.#store.appendEvent('task', taskId, 'blocked', { code, message });
+      this.#clearCurrentTask(task.team_id, taskId);
       return this.#view(updated, this.#requireMeta(taskId));
     });
   }
@@ -550,6 +570,7 @@ export class TaskScheduler {
       if (task.attempt_id !== null) this.#finishAttempt(task.attempt_id, 'cancelled', 'CANCELLED', reason);
       this.#store.updateTaskMeta(taskId, { errorCode: 'CANCELLED', errorMessage: reason, updatedAt: now });
       this.#store.appendEvent('task', taskId, 'cancelled', { reason });
+      this.#clearCurrentTask(task.team_id, taskId);
       this.#refreshReadinessLocked(task.team_id);
       return this.#view(updated, meta);
     });
@@ -568,6 +589,14 @@ export class TaskScheduler {
       if (task.status !== 'failed' && task.status !== 'blocked') {
         throw new MeshError('TASK_STATE_INVALID', 'only failed or blocked tasks can be retried', { taskId, status: task.status });
       }
+      const meta = this.#requireMeta(taskId);
+      if (meta.jobId !== null || meta.remoteStatus !== null) {
+        throw new MeshError('TASK_STATE_INVALID', 'task has a remote job; reconcile or abandon it before retry', {
+          taskId,
+          jobId: meta.jobId,
+          remoteStatus: meta.remoteStatus,
+        });
+      }
       const now = nowIso();
       const maxAttempts = options.extendAttempts === true && task.attempt_count >= task.max_attempts
         ? task.attempt_count + 1
@@ -585,6 +614,7 @@ export class TaskScheduler {
       }, task.revision);
       this.#store.updateTaskMeta(taskId, { errorCode: null, errorMessage: null, remoteStatus: null, updatedAt: now });
       this.#store.appendEvent('task', taskId, 'retried', { reason: options.reason, maxAttempts });
+      this.#clearCurrentTask(task.team_id, taskId);
       return this.#view(updated, this.#requireMeta(taskId));
     });
   }
@@ -629,6 +659,7 @@ export class TaskScheduler {
           }, task.revision);
           if (task.attempt_id !== null) this.#finishAttempt(task.attempt_id, 'succeeded');
         }
+        this.#clearCurrentTask(task.team_id, taskId);
         this.#refreshReadinessLocked(task.team_id);
       }
       this.#store.updateTaskMeta(taskId, {
@@ -697,6 +728,7 @@ export class TaskScheduler {
             updatedAt: now,
           });
           this.#store.appendEvent('task', task.task_id, 'recovered-as-failed', { previousWorker: task.assigned_agent });
+          this.#clearCurrentTask(group.teamId, task.task_id);
           failedLocal.push(task.task_id);
         }
       }
@@ -763,6 +795,11 @@ export class TaskScheduler {
       attemptId,
       leaseExpiresAt: expiresAt,
     };
+  }
+
+  #clearCurrentTask(teamId: string, taskId: string): void {
+    const group = this.#store.getGroup(teamId);
+    if (group?.currentTaskId === taskId) this.#store.updateGroup(teamId, { currentTaskId: null, updatedAt: nowIso() });
   }
 
   #refreshReadinessLocked(teamId: string): void {

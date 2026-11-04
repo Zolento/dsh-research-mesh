@@ -17,7 +17,9 @@ npm run test:all
 node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome
 ```
 
-`npm run test:all` is the aggregate: 54 tests as of the v0.1.0 delivery.
+`npm run test:all` is the aggregate: 72 tests after the group-control harness audit
+(63 unit + 6 integration + 3 end-to-end). The audit findings and their
+regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
 
@@ -25,15 +27,16 @@ node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome
 
 | File | Covers |
 |---|---|
-| `teams.test.ts` | 3 groups / fourth rejected; 4 subagents each / 13th rejected; pause/resume; restart registry; group default, captain and subagent model override; inherit; invalid model; no-fallback |
+| `teams.test.ts` | 3 groups / fourth rejected; 4 subagents each / 13th rejected; destroyed group releases quota; pause/resume; restart registry; group default, captain and subagent override; slot-order fallback; resume model; state-path escape; team-id collision; invalid model; no-fallback |
 | `workspaces.test.ts` | three worktrees; independent edits; source baseline untouched; existing-directory refusal; `..`; absolute path; symlink escape; dirty cleanup refusal; explicit force; restart recognition |
-| `scheduler.test.ts` | priority + FIFO; dependencies; one winner across two schedulers; idempotent submit; restart; invalid transitions; retry/cancel/block; expired local lease recovery |
-| `gpu.test.ts` | GPU 0/1 independent; third waits; no double lease; unknown/busy fail-closed; reconcile then reuse |
+| `scheduler.test.ts` | priority + FIFO; dependencies; one winner across two schedulers; idempotent submit; restart; invalid transitions; retry/cancel/block; expired local lease recovery; direct-claim concurrency; terminal current-task cleanup |
+| `gpu.test.ts` | two tasks lease GPU 0/1 independently; no double lease; one task cannot hold two GPUs; unknown/busy fail-closed; reconcile then reuse |
 | `executor.test.ts` | exact Conda argv; manifest traversal/absolute/GPU/forged-digest rejection; test-stub gate; generated wrapper with hostile argv (no shell execution); artifact-manifest path/hash validation |
 | `rsi.test.ts` | real skill discovery; read-only `state_check`; real receipt preview; real consumed receipt via ledger; state-change rejection; preview forbidden without explicit test flag |
-| `projects.test.ts` | project registration; invalid/missing RSI state; restart; RSI readability failure; control binding/detach/conflict; captain/member binding; project pause blocks new work |
-| `model-settings.test.ts` | Config-backed DSH settings write/version; missing namespace; selected model reaches session host; file store restart |
+| `projects.test.ts` | project registration; invalid/missing RSI state; restart; readability failure; control/member bindings and cross-project refusal; manual-pause preservation; archive; startup pause reconciliation; Captain-binding rollback; destroy detaches bindings |
+| `model-settings.test.ts` | Config-backed DSH settings write/version; stale-cache refresh; empty group schema; override-without-default rejection; selected model reaches session host; file store restart |
 | `client-bundle.test.ts` | loader id; inject; main/sidebar/settings/header/hero registrations; initial component render |
+| `session-host.test.ts` | controller member creation without live Captain; model failure cancels the short-lived session |
 
 ### Integration
 
