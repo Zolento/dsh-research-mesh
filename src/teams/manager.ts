@@ -462,6 +462,13 @@ export class TeamManager {
     };
     try {
       this.#store.transaction(() => {
+        const liveTeam = this.#store.teamStore.getTeam(input.teamId);
+        const liveGroup = this.#store.getGroup(input.teamId);
+        if (liveTeam?.status !== 'active' || liveGroup?.status !== 'active') {
+          throw new MeshError('TEAM_STATE_INVALID', 'group was paused or destroyed while registering a subagent', {
+            teamId: input.teamId,
+          });
+        }
         this.#assertSubagentQuota(input.teamId);
         this.#assertSessionUnclaimed(input.teamId, sessionId);
         this.#store.teamStore.upsertMember(member);
@@ -572,6 +579,9 @@ export class TeamManager {
     const team = this.#requireTeam(teamId);
     const group = this.#store.getGroup(teamId);
     if (group === undefined) throw this.#notFound(teamId);
+    if (group.status === 'destroyed') {
+      throw new MeshError('TEAM_STATE_INVALID', 'cannot resume a destroyed group', { teamId });
+    }
     // Resume with the group's resolved captain model, not a stale plugin-wide
     // fallback. This keeps a restart consistent with the manual assignment.
     const resolved = await this.#resolveCaptainModel(team.title, {

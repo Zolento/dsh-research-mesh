@@ -24,6 +24,10 @@ with open(os.path.join(out, "metrics.json"), "w", encoding="utf-8") as handle:
 print("experiment finished")
 `;
 
+const EXPERIMENT_FAIL_SCRIPT = `import sys
+sys.exit(1)
+`;
+
 interface Prepared {
   readonly project: TempProject;
   readonly service: import('../../src/service.ts').MeshService;
@@ -37,6 +41,7 @@ interface Prepared {
 async function prepare(options: {
   transport?: FakeTransport;
   tag: string;
+  script?: string;
 }): Promise<Prepared> {
   const project = makeTempProject({ name: options.tag });
   const { service } = await makeService(project, {
@@ -47,7 +52,7 @@ async function prepare(options: {
   });
   const team = await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
   const workspacePath = team.workspacePath as string;
-  service.writeWorkspaceFile(team.workspaceId as string, 'experiments/mesh_experiment.py', EXPERIMENT_SCRIPT);
+  service.writeWorkspaceFile(team.workspaceId as string, 'experiments/mesh_experiment.py', options.script ?? EXPERIMENT_SCRIPT);
   const fixture = buildRsiFixture(project.root, SKILL, false, {
     cwd: workspacePath,
     argv: ['python3', 'experiments/mesh_experiment.py'],
@@ -231,6 +236,22 @@ test('fault B: partial artifact transfer retries without re-running the experime
     const attemptId = service.listJobs()[0]?.attemptId as string;
     const runLog = readFileSync(join(project.root, '.research-mesh', 'artifacts', jobId, attemptId, 'run.log'), 'utf8').trim().split('\n');
     assert.equal(runLog.length, 1, 'partial transfer must not trigger a rerun');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+
+test('a remote nonzero exit is FAILED, never automatically READY for resubmission', async () => {
+  const prepared = await prepare({ tag: 'e2e-fail', script: EXPERIMENT_FAIL_SCRIPT });
+  const { service, project } = prepared;
+  try {
+    const failed = await waitForTask(service, prepared.jobId, task => task.status === 'FAILED');
+    assert.equal(failed.status, 'FAILED');
+    assert.equal(service.listJobs()[0]?.status, 'failed');
+    assert.equal(service.getTeam(prepared.teamId).currentTaskId, null);
+    assert.equal(service.listGpuLeases().some(lease => lease.state === 'active'), false);
   } finally {
     await service.close();
     project.cleanup();

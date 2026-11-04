@@ -81,9 +81,11 @@ quarantines the old lease instead of leaving it active.
 persisted remote `jobId`. An operator retry could create a new job for a task
 whose old remote process still existed.
 
-**Fix:** retry is refused while `meta.jobId` or a remote status is present;
-the operator must reconcile or abandon first. Submit errors that make the
-remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
+**Fix:** retry is refused while `meta.jobId` or a remote status is present, and
+a remote-backed failure is kept `FAILED` (never converted to `READY` for
+automatic retry). The operator must reconcile/abandon and create a new task
+with fresh RSI authorization. Submit errors that make the remote state
+unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 
 ## Medium-severity findings fixed
 
@@ -165,6 +167,7 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 - terminal task clears group `currentTaskId`
 - one task cannot hold two GPU leases
 - unknown project cannot create a group through the API
+- remote nonzero exit ends FAILED, never READY for automatic resubmission
 - released member can be re-registered without a primary-key conflict
 - Captain session cannot be registered as a member
 - project activation checks canonical-state readability
@@ -187,7 +190,7 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 73 tests, 0 failures.
+- `npm run test:all` — 74 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push, deployment, real SSH, real GPU, or upstream modification.

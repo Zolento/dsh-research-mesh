@@ -129,6 +129,7 @@ test('destroyed groups release global subagent quota and group slots', async () 
     const workspace = service.getTeam(teams[0] as string).workspacePath as string;
     await service.destroyTeam(teams[0] as string);
     assert.equal(service.status().subagents, 8);
+    assert.equal(service.status().teams, 2);
     assert.ok(existsSync(workspace), 'destroy must retain the worktree');
     await service.saveModelSettings({
       version: 1,

@@ -492,8 +492,13 @@ export class TaskScheduler {
         throw new MeshError('TASK_STATE_INVALID', 'task is not running under this attempt', { taskId, attemptId });
       }
       const exhausted = task.attempt_count >= task.max_attempts;
+      const meta = this.#requireMeta(taskId);
+      // A remote-backed attempt is never retried automatically: rerunning it
+      // would bypass the RSI authorization/consumption for that job. Local
+      // tasks may be retried in place when the policy allows it.
+      const remoteBacked = meta.jobId !== null || meta.remoteStatus !== null;
       const now = nowIso();
-      const status: ResearchTask['status'] = retryable && !exhausted ? 'ready' : 'failed';
+      const status: ResearchTask['status'] = retryable && !exhausted && !remoteBacked ? 'ready' : 'failed';
       const updated = this.#store.teamStore.updateTask({
         ...task,
         status,

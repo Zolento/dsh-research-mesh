@@ -462,9 +462,9 @@ export class RemoteJobExecutor {
       rmSync(final, { recursive: true, force: true });
       throw error;
     }
+    this.#gpu.releaseForTask(job.taskId, 'artifacts ingested');
     this.#scheduler.markRemote(job.taskId, 'INGESTED', { jobId });
     const task = this.#scheduler.markRemote(job.taskId, 'ASSURANCE_PENDING', { jobId });
-    this.#gpu.releaseForTask(job.taskId, 'artifacts ingested');
     let outcomePath: string | null = null;
     const experimentId = manifest.authorization.rsi_experiment_id;
     const receiptId = manifest.authorization.rsi_receipt_ref;

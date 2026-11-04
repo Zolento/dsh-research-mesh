@@ -17,8 +17,8 @@ npm run test:all
 node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome
 ```
 
-`npm run test:all` is the aggregate: 73 tests after the group-control harness audit
-(64 unit + 6 integration + 3 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 74 tests after the group-control harness audit
+(64 unit + 6 integration + 4 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
@@ -49,7 +49,7 @@ regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ### End to end
 
-`tests/e2e/closed-loop.test.ts`:
+`tests/e2e/closed-loop.test.ts` (4 tests):
 
 1. temp project + three groups + worktrees;
 2. four subagent identities per group;
@@ -67,6 +67,11 @@ Fault A — submit response lost:
 - controller closes, restarts, marks in-flight work for reconciliation;
 - `reconcileJob` finds the existing remote result and adopts it;
 - collection succeeds; the run log has exactly one execution.
+
+Remote nonzero exit:
+
+- the remote state is `failed`; the task ends `FAILED` (not `READY`), the job
+  `failed`, the GPU lease is released, and no automatic resubmit is possible.
 
 Fault B — partial artifact transfer:
 

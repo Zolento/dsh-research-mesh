@@ -174,7 +174,6 @@ export class ModelResolver {
   readonly #store: ModelSettingsStore;
   readonly #catalog: ModelCatalog;
   readonly #fallback: ModelChoice | undefined;
-  readonly #version: string;
 
   /**
    * @param store - persisted settings document.
@@ -182,11 +181,14 @@ export class ModelResolver {
    * @param fallback - explicit plugin config default, if any.
    * @param version - config document version label.
    */
-  constructor(store: ModelSettingsStore, catalog: ModelCatalog, fallback: ModelChoice | undefined, version = 'settings-v1') {
+  constructor(store: ModelSettingsStore, catalog: ModelCatalog, fallback: ModelChoice | undefined) {
     this.#store = store;
     this.#catalog = catalog;
     this.#fallback = fallback;
-    this.#version = version;
+  }
+
+  get #version(): string {
+    return `settings-v${this.#store.read().version}`;
   }
 
   /** Current settings document. */

@@ -22,8 +22,8 @@ Commit: `3271774` plus the delivery-status follow-up
 |---|---|---|
 | Unit | 64 | pass |
 | Integration | 6 | pass |
-| End-to-end + fault injection | 3 | pass |
-| **Total** | **73** | **pass, 0 fail, 0 skip** |
+| End-to-end + fault injection | 4 | pass |
+| **Total** | **74** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |

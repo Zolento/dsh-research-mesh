@@ -154,7 +154,7 @@ export class MeshService {
       const sessionHost = this.#sessionHostOverride ?? this.#createSessionHost();
       const catalog = this.#catalogOverride ?? this.#createCatalog();
       const settings = this.#settingsOverride ?? new MemoryModelSettingsStore();
-      const models = new ModelResolver(settings, catalog, this.#config.agent, `settings-v${settings.read().version}`);
+      const models = new ModelResolver(settings, catalog, this.#config.agent);
       const projects = new ProjectRegistry(this.#config, store, this.#logger);
       const teams = new TeamManager(this.#config, store, sessionHost, workspaces, this.#logger, models);
       const scheduler = new TaskScheduler(this.#config, store, this.#logger);
@@ -275,7 +275,7 @@ export class MeshService {
       projectRoot: this.#config.projectRoot,
       workerId: this.#workerId ?? '',
       worker: this.#worker?.status() ?? { running: false, workerId: '', lastError: null },
-      teams: groups.length,
+      teams: groups.filter(group => group.status !== 'destroyed').length,
       activeTeams: groups.filter(group => group.status === 'active').length,
       subagents: this.#teams?.totalSubagents() ?? 0,
       tasks: tasks.length,
@@ -547,6 +547,7 @@ export class MeshService {
   /** Create a demo local task and run one worker round, for the Workbench. */
   async simulateLocalTask(projectId: string, teamId?: string): Promise<import('./scheduler/scheduler.ts').MeshTaskView> {
     const groups = this.#requireTeams().list(projectId);
+    this.#assertProjectActive(projectId);
     const group = teamId === undefined
       ? groups.find(candidate => candidate.status === 'active')
       : groups.find(candidate => candidate.teamId === teamId);
@@ -1033,6 +1034,12 @@ export class MeshService {
   #assertProjectActive(projectId: string): void {
     if (this.#projects === null) return;
     const existing = this.#projects.list().find(project => project.projectId === projectId);
+    if (existing !== undefined && !existing.rsiReadable) {
+      throw new MeshError('RSI_STATE_UNAVAILABLE', 'the project RSI state is not readable', {
+        projectId,
+        error: existing.rsiError,
+      });
+    }
     if (existing !== undefined && existing.status !== 'active') {
       throw new MeshError('TEAM_STATE_INVALID', 'project is not active; new tasks are not scheduled', { projectId, status: existing.status });
     }

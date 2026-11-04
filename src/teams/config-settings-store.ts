@@ -48,7 +48,8 @@ export class ConfigModelSettingsStore implements ModelSettingsStore {
     const value = this.#unwrap();
     if (typeof value === 'object' && value !== null && !Array.isArray(value)
       && Object.keys(value as Record<string, unknown>).length === 0) {
-      return this.#cache ?? { version: 1, groups: {} };
+      this.#cache = null;
+      return { version: 1, groups: {} };
     }
     if (value !== undefined && value !== null) {
       const current = validateModelDocument(value);
