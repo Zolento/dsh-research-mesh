@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh.local/schemas/job-manifest.schema.json",
+  "title": "DSH Research Mesh Job Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "job_id", "attempt_id", "project_id", "team_id", "code", "execution", "resources", "artifacts", "authorization", "created_at"],
+  "properties": {
+    "schema": { "const": "dsh-research-mesh/job-manifest@1" },
+    "job_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "project_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "team_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "workspace_id": { "type": ["string", "null"] },
+    "code": {
+      "type": "object", "additionalProperties": false, "required": ["commit"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}([a-f0-9]{24})?$" },
+        "branch": { "type": "string" }
+      }
+    },
+    "execution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entrypoint", "argv", "working_directory", "conda_environment"],
+      "properties": {
+        "entrypoint": { "type": "string", "minLength": 1 },
+        "argv": { "type": "array", "items": { "type": "string" }, "maxItems": 256 },
+        "working_directory": { "type": "string", "minLength": 1 },
+        "conda_environment": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false, "required": ["worker_id", "gpu_id"],
+      "properties": {
+        "worker_id": { "type": "string" },
+        "gpu_id": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": false, "required": ["destination"],
+      "properties": {
+        "destination": { "type": "string", "pattern": "^artifacts(/.*)?$" },
+        "required": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "authorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "rsi_receipt_ref", "research_state_version"],
+      "properties": {
+        "mode": { "enum": ["rsi-receipt", "test-stub", "none"] },
+        "rsi_receipt_ref": { "type": ["string", "null"] },
+        "research_state_version": { "type": ["string", "null"] },
+        "rsi_receipt_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "rsi_experiment_id": { "type": "string" },
+        "rsi_manifest_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "verified_by": { "type": "string" },
+        "verified_at": { "type": "string" },
+        "consumed_ledger_event_seal": { "type": "string" }
+      }
+    },
+    "environment": { "type": "object", "additionalProperties": { "type": "string" } },
+    "requested_hours": { "type": "number", "exclusiveMinimum": 0 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

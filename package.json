@@ -1,0 +1,64 @@
+{
+  "name": "dsh-research-mesh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Research Mesh: a durable, recoverable multi-group research collaboration runtime for DeepSeek Harness.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config/index.ts",
+    "./service": "./src/service.ts",
+    "./teams": "./src/teams/index.ts",
+    "./workspaces": "./src/workspaces/index.ts",
+    "./scheduler": "./src/scheduler/index.ts",
+    "./executors": "./src/executors/index.ts",
+    "./resources": "./src/resources/index.ts",
+    "./rsi": "./src/rsi/index.ts",
+    "./package.json": "./package.json",
+    "./client": "./client/client.js"
+  },
+  "files": [
+    "src",
+    "client",
+    "schemas",
+    "cordis.patch.yml",
+    "README.md",
+    "dsh-compat.json",
+    "docs"
+  ],
+  "engines": {
+    "node": ">=22.18.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test 'tests/unit/*.test.ts'",
+    "test:integration": "node --test 'tests/integration/*.test.ts'",
+    "test:e2e": "node --test 'tests/e2e/*.test.ts'",
+    "test:all": "node --test 'tests/**/*.test.ts'",
+    "link-toolchain": "node scripts/link-toolchain.mjs",
+    "check-dsh": "node scripts/check-dsh.mjs",
+    "acceptance": "bash scripts/acceptance.sh",
+    "verify": "npm run typecheck && npm run test:all"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "plugin": "dsh-research-mesh",
+  "version": "0.1.0",
+  "dsh": {
+    "version": "0.2.1-rc.5",
+    "installedHost": "/home/lenovo/.nvm/versions/node/v22.23.2/lib/node_modules/@deepseek-ai/dsh",
+    "sourceCheckout": "/home/lenovo/code/dsh-plugins/deepseek-harness",
+    "sourceTag": "dsh-v0.2.1-rc.2",
+    "sourceCommit": "687f282e86"
+  },
+  "verifiedSeams": [
+    "bundle patch row loaded by absolute path and by profile bundle",
+    "engines.dsh compatibility gate",
+    "ctx.provide / ctx.effect / ctx.inject lifecycle",
+    "ctx.get('agents') optional AgentRegistry",
+    "ctx.get('llm').listProviders/listModels for the live model catalog",
+    "ctx.get('sessionController').create/selectModel for Web-openable sessions",
+    "ctx.get('workspaceController').create for workspace association",
+    "ctx.get('settings').describe/update for volatile Config persistence",
+    "ctx.webServer.register prefix route",
+    "client window.__ModuleLoader__.load contract",
+    "client slots: main, sidebar.panellist, settings.section, conversation.session.header.actions, conversation.hero.options",
+    "ctx.layout.selectPanel",
+    "ctx.uiWorkspace.openSession",
+    "ctx.sessions.create/refresh",
+    "node:sqlite DatabaseSync",
+    "Node 22.23 native TypeScript type stripping"
+  ],
+  "runtimeDependencies": [
+    "@deepseek-ai/schemastery@3.18.5 (peer/dependency for volatile Config)"
+  ],
+  "integrationTarget": {
+    "skill": "research-idea-pipeline",
+    "installedPath": "/home/lenovo/.agents/skills/rsi-pipeline",
+    "installSourceCommit": "2269957302bd0e8c1b18fdea7c5f9c229ddaa420",
+    "pinKind": "advisory"
+  }
+}

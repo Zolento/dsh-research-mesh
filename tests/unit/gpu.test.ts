@@ -1,0 +1,100 @@
+/** Static GPU lease exclusivity, fail-closed probing and reconciliation. */
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { makeService, makeTempProject } from '../helpers/env.ts';
+import { StaticGpuProbe } from '../../src/resources/gpu.ts';
+import { MeshError } from '../../src/errors.ts';
+
+async function fixture(probe?: InstanceType<typeof StaticGpuProbe>) {
+  const project = makeTempProject();
+  const { service } = await makeService(project, probe === undefined ? {} : { gpuProbe: probe });
+  const team = await service.createTeam({ projectId: 'proj-a', routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+  const task = service.submitTask({
+    projectId: 'proj-a',
+    teamId: team.teamId,
+    type: 'local',
+    title: 'gpu-holder',
+    payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+  }).task;
+  const claim = service.claimNext();
+  assert.ok(claim !== undefined);
+  return { project, service, task, attemptId: claim.attemptId };
+}
+
+test('GPU 0 and GPU 1 lease independently and a third exclusive job waits', async () => {
+  const { project, service, task, attemptId } = await fixture();
+  try {
+    const first = await service.acquireGpu({
+      workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0,
+    });
+    const second = await service.acquireGpu({
+      workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 1,
+    });
+    assert.equal(first.lease.gpuId, 0);
+    assert.equal(second.lease.gpuId, 1);
+    await assert.rejects(
+      () => service.acquireGpu({
+        workerId: 'workstation', taskId: task.taskId, jobId: 'job-3', attemptId,
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'GPU_UNAVAILABLE',
+    );
+    assert.equal(service.listGpuLeases('workstation').filter(lease => lease.state === 'active').length, 2);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('the same GPU cannot be double-leased', async () => {
+  const { project, service, task, attemptId } = await fixture();
+  try {
+    await service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0 });
+    await assert.rejects(
+      () => service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 0 }),
+      (error: unknown) => error instanceof MeshError && error.code === 'GPU_LEASE_CONFLICT',
+    );
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('an unverifiable GPU blocks acquisition instead of assuming it is free', async () => {
+  const probe = new StaticGpuProbe({ 'workstation:0': 'unknown', 'workstation:1': 'busy' });
+  const { project, service, task, attemptId } = await fixture(probe);
+  try {
+    await assert.rejects(
+      () => service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0 }),
+      (error: unknown) => error instanceof MeshError && error.code === 'GPU_AVAILABILITY_UNKNOWN',
+    );
+    await assert.rejects(
+      () => service.acquireGpu({ workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 1 }),
+      (error: unknown) => error instanceof MeshError && error.code === 'GPU_UNAVAILABLE',
+    );
+    assert.equal(service.listGpuLeases().filter(lease => lease.state !== 'released').length, 0);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('recovery releases leases for terminal tasks before reassignment', async () => {
+  const { project, service, task, attemptId } = await fixture();
+  try {
+    const lease = await service.acquireGpu({
+      workerId: 'workstation', taskId: task.taskId, jobId: 'job-1', attemptId, gpuId: 0,
+    });
+    service.cancelTask(task.taskId, 'test cleanup');
+    const result = service.reconcileGpu();
+    assert.ok(result.released >= 1);
+    assert.equal(service.listGpuLeases('workstation').find(item => item.leaseId === lease.lease.leaseId)?.state, 'released');
+    const reacquired = await service.acquireGpu({
+      workerId: 'workstation', taskId: task.taskId, jobId: 'job-2', attemptId, gpuId: 0,
+    });
+    assert.equal(reacquired.lease.state, 'active');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});

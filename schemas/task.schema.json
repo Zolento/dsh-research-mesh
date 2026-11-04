@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh.local/schemas/task.schema.json",
+  "title": "DSH Research Mesh Task v1",
+  "type": "object",
+  "required": ["task_id", "project_id", "team_id", "type", "status", "priority", "dependencies", "created_at", "updated_at", "attempt_id", "workspace_id", "rsi_state_version", "receipt_ref"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "team_id": { "type": "string" },
+    "type": { "enum": ["research", "local", "experiment"] },
+    "status": {
+      "enum": ["PENDING", "READY", "CLAIMED", "RUNNING", "SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED", "SUBMITTED", "RECONCILE_REQUIRED", "OUTPUT_READY", "INGESTED", "ASSURANCE_PENDING"]
+    },
+    "priority": { "type": "integer", "minimum": 0, "maximum": 1000 },
+    "dependencies": { "type": "array", "items": { "type": "string" } },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "attempt_id": { "type": ["string", "null"] },
+    "workspace_id": { "type": ["string", "null"] },
+    "rsi_state_version": { "type": ["string", "null"] },
+    "receipt_ref": { "type": ["string", "null"] },
+    "job_id": { "type": ["string", "null"] },
+    "gpu_id": { "type": ["integer", "null"] }
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+.research-mesh/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.tmp/
+coverage/
+.DS_Store
+*.log
+*.tgz

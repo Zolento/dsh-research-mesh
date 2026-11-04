@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh.local/schemas/team.schema.json",
+  "title": "DSH Research Mesh Team v1",
+  "type": "object",
+  "required": ["team_id", "root_session_id", "subagent_session_ids", "workspace_id", "research_project_id", "research_route_id", "current_task_id", "status", "updated_at"],
+  "properties": {
+    "team_id": { "type": "string" },
+    "root_session_id": { "type": "string" },
+    "subagent_session_ids": { "type": "array", "items": { "type": "string" }, "maxItems": 4 },
+    "workspace_id": { "type": ["string", "null"] },
+    "research_project_id": { "type": "string" },
+    "research_route_id": { "type": "string" },
+    "current_task_id": { "type": ["string", "null"] },
+    "status": { "enum": ["active", "paused", "destroyed"] },
+    "updated_at": { "type": "string" }
+  }
+}

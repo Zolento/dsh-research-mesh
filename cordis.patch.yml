@@ -1,0 +1,7 @@
+# One host row. Mesh services, scheduler and executor are provided inside apply().
+- insert:
+    - id: dsh-research-mesh
+      name: dsh-research-mesh
+      config:
+        projectRoot: ""
+        sessionBinding: dsh

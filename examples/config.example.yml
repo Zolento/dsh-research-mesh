@@ -1,0 +1,47 @@
+# Research Mesh plugin row. Prefer installing the package as a profile bundle,
+# then overriding this row in the profile's cordis.patch.yml.
+- id: dsh-research-mesh
+  name: dsh-research-mesh
+  config:
+    projectRoot: /absolute/research-project
+    sourceDir: source
+    worktreesDir: worktrees
+    modelSettingsPath: /home/user/.dsh/dsh-research-mesh/model-settings.json
+    sessionBinding: dsh
+    agent:
+      provider: deepseek-pool
+      model: deepseek-flash
+    limits:
+      maxTeams: 3
+      maxSubagentsPerTeam: 4
+      maxSubagentsTotal: 12
+      maxConcurrentTasks: 4
+      maxConcurrentTasksPerTeam: 2
+      taskLeaseMs: 300000
+      schedulerPollMs: 5000
+    conda:
+      executable: conda
+      defaultEnvironment: research
+    workers:
+      workstation:
+        transport: ssh
+        enabled: false
+        host: workstation.example
+        user: researcher
+        port: 22
+        gpuIds: [0, 1]
+        maxGpuJobs: 2
+        condaEnvironment: research
+        remoteRoot: /home/researcher/dsh-research-mesh
+    ssh:
+      enabled: false
+      connectTimeoutSec: 30
+    rsi:
+      enabled: true
+      skillPath: /home/user/.agents/skills/rsi-pipeline
+      pythonExecutable: python3
+      allowTestStub: false
+    allowFakeTransport: false
+    autoStartScheduler: false
+    startupRecovery: true
+    logLevel: info

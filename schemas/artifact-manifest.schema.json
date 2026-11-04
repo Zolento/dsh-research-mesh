@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh.local/schemas/artifact-manifest.schema.json",
+  "title": "DSH Research Mesh Artifact Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "job_id", "attempt_id", "manifest_sha256", "status", "created_at", "files", "total_bytes"],
+  "properties": {
+    "schema": { "const": "dsh-research-mesh/artifact-manifest@1" },
+    "job_id": { "type": "string" },
+    "attempt_id": { "type": "string" },
+    "manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "status": { "const": "complete" },
+    "created_at": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "total_bytes": { "type": "integer", "minimum": 0 }
+  }
+}
