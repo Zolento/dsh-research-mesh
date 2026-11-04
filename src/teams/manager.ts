@@ -370,6 +370,8 @@ export class TeamManager {
     if (current === undefined) throw this.#notFound(teamId);
     if (current.status === 'destroyed') return this.#view(teamId);
     const team = this.#requireTeam(teamId);
+    const members = this.#store.teamStore.listMembers(teamId)
+      .filter(member => member.role !== 'captain' && member.status !== 'disposed');
     const now = nowIso();
     this.#store.transaction(() => {
       this.#store.teamStore.upsertTeam({
@@ -382,6 +384,9 @@ export class TeamManager {
       this.#store.appendEvent('team', teamId, 'destroyed', {});
     });
     await this.#sessions.disposeRoot(team.captainAgentId);
+    for (const member of members) {
+      await this.#sessions.disposeRoot(member.agentId);
+    }
     this.#logger.info('research group destroyed (workspace retained)', { teamId });
     return this.#view(teamId);
   }
@@ -595,6 +600,17 @@ export class TeamManager {
   // -- internals -----------------------------------------------------------
 
   #assertSessionUnclaimed(teamId: string, sessionId: string): void {
+    if (this.#store.teamStore.getTeam(teamId)?.captainAgentId === sessionId) {
+      throw new MeshError('SUBAGENT_DUPLICATE', 'the Captain session cannot also be a subagent', { teamId, sessionId });
+    }
+    for (const other of this.#store.listGroups()) {
+      if (other.teamId === teamId) continue;
+      if (this.#store.teamStore.getTeam(other.teamId)?.captainAgentId === sessionId) {
+        throw new MeshError('SUBAGENT_DUPLICATE', 'a Captain session cannot be registered as a subagent', {
+          teamId, otherTeamId: other.teamId, sessionId,
+        });
+      }
+    }
     const inTeam = this.#store.teamStore.listMembers(teamId)
       .find(member => member.agentId === sessionId && member.status !== 'disposed');
     if (inTeam !== undefined) {

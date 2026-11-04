@@ -154,6 +154,18 @@ export class TaskScheduler {
         groupStatus: group.status,
       });
     }
+    if (group.projectId !== input.projectId) {
+      throw new MeshError('TEAM_NOT_FOUND', 'group belongs to a different project', {
+        teamId: input.teamId,
+        groupProjectId: group.projectId,
+        projectId: input.projectId,
+      });
+    }
+    if (!this.#projectActive(input.projectId)) {
+      throw new MeshError('TEAM_STATE_INVALID', 'project is not active; tasks are not scheduled', {
+        projectId: input.projectId,
+      });
+    }
     const dependencies = [...new Set(input.dependencies ?? [])];
     if (input.priority !== undefined && (!Number.isSafeInteger(input.priority) || input.priority < 0 || input.priority > 1000)) {
       throw new MeshError('INVALID_ARGUMENT', 'priority must be an integer in [0, 1000]', { priority: input.priority });
@@ -304,6 +316,7 @@ export class TaskScheduler {
     return this.#store.transaction(() => {
       const groups = this.#store.listGroups(options.projectId)
         .filter(group => group.status === 'active')
+        .filter(group => this.#projectActive(group.projectId))
         .filter(group => this.#store.teamStore.getTeam(group.teamId)?.status === 'active')
         .filter(group => options.teamId === undefined || group.teamId === options.teamId);
       const globalActive = this.#countActive();
@@ -316,7 +329,7 @@ export class TaskScheduler {
           if (task.attempt_count >= task.max_attempts) continue;
           const meta = this.#store.getTaskMeta(task.task_id);
           if (meta === undefined) continue;
-          if (meta.remoteStatus !== null) continue;
+          if (meta.jobId !== null || meta.remoteStatus !== null) continue;
           if (this.#blockingDependencies(task).length > 0) continue;
           candidates.push({ task, meta });
         }
@@ -352,9 +365,15 @@ export class TaskScheduler {
       if (team?.status !== 'active' || group?.status !== 'active') {
         throw new MeshError('TASK_NOT_CLAIMABLE', 'task group or project is not active', { taskId, teamId: task.team_id });
       }
+      if (group === undefined || !this.#projectActive(group.projectId)) {
+        throw new MeshError('TASK_NOT_CLAIMABLE', 'task project is not active', { taskId, teamId: task.team_id });
+      }
       if (this.#countActive() >= this.#config.limits.maxConcurrentTasks
         || this.#countActive(task.team_id) >= this.#config.limits.maxConcurrentTasksPerTeam) {
         throw new MeshError('TASK_NOT_CLAIMABLE', 'concurrency limit reached', { taskId, teamId: task.team_id });
+      }
+      if (meta.jobId !== null || meta.remoteStatus !== null) {
+        throw new MeshError('TASK_NOT_CLAIMABLE', 'task has a remote job and cannot be claimed again', { taskId });
       }
       if (task.attempt_count >= task.max_attempts) {
         throw new MeshError('TASK_NOT_CLAIMABLE', 'attempts exhausted', { taskId, attempts: task.attempt_count });
@@ -362,9 +381,6 @@ export class TaskScheduler {
       const blocking = this.#blockingDependencies(task);
       if (blocking.length > 0) {
         throw new MeshError('TASK_NOT_CLAIMABLE', 'dependencies are not complete', { taskId, blocking });
-      }
-      if (meta.remoteStatus !== null) {
-        throw new MeshError('TASK_NOT_CLAIMABLE', 'task is in a remote state', { taskId, remoteStatus: meta.remoteStatus });
       }
       return this.#claimLocked(task, meta, workerId, nowMs, now);
     });
@@ -795,6 +811,11 @@ export class TaskScheduler {
       attemptId,
       leaseExpiresAt: expiresAt,
     };
+  }
+
+  #projectActive(projectId: string): boolean {
+    const project = this.#store.getProject(projectId);
+    return project === undefined || project.status === 'active';
   }
 
   #clearCurrentTask(teamId: string, taskId: string): void {

@@ -967,7 +967,16 @@ export class MeshStore {
     this.#store.transaction(db => {
       db.prepare(`INSERT INTO mesh_agent_models
         (session_id, team_id, role, name, provider, model, source, config_version, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          team_id = excluded.team_id,
+          role = excluded.role,
+          name = excluded.name,
+          provider = excluded.provider,
+          model = excluded.model,
+          source = excluded.source,
+          config_version = excluded.config_version,
+          created_at = excluded.created_at`)
         .run(
           record.sessionId, record.teamId, record.role, record.name, record.provider,
           record.model, record.source, record.configVersion, record.createdAt,

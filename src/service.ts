@@ -671,6 +671,15 @@ export class MeshService {
 
   async registerSubagent(input: RegisterSubagentInput): Promise<SubagentView> {
     const team = this.#requireTeams().get(input.teamId);
+    if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
+      const project = this.#projects.get(team.researchProjectId);
+      if (project.status !== 'active') {
+        throw new MeshError('TEAM_STATE_INVALID', 'project is not active; cannot register a member', {
+          projectId: project.projectId,
+          status: project.status,
+        });
+      }
+    }
     const subagent = await this.#requireTeams().registerSubagent(input);
     if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
       try {

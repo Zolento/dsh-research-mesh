@@ -136,6 +136,9 @@ export class ProjectRegistry {
     if (status === 'active' && !record.runnable) {
       throw new MeshError('INVALID_ARGUMENT', 'this runtime cannot activate a project outside its configured source root', { projectId });
     }
+    if (status === 'active' && !this.view(record).rsiReadable) {
+      throw new MeshError('RSI_STATE_UNAVAILABLE', 'the project RSI state is not readable; cannot activate it', { projectId });
+    }
     this.#store.updateProject(projectId, { status, updatedAt: nowIso() });
     return this.get(projectId);
   }

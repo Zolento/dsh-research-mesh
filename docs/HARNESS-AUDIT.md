@@ -117,7 +117,18 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 - **Direct `claimTask` bypass:** named claims now enforce team/group active state
   and global/per-team concurrency, matching `claimNext`.
 - **Stale task/team mismatch:** `claimNext` requires both the Mesh group and the
-  bridge team to be active; submission requires an active group too.
+  bridge team to be active; submission requires an active group and a matching,
+  active project. The scheduler also checks project status inside the claim
+  transaction, closing the pause/claim race. A submission whose `projectId`
+  differs from the group's project is refused.
+- **Re-registering a released member:** `mesh_agent_models` used a plain INSERT,
+  so reusing a released session hit the primary key. It is now an UPSERT; the
+  administrator can release and re-register the same external session.
+- **Captain session reused as a member:** the duplicate check now covers group
+  Captain ids, not only existing member rows.
+- **Project activation with missing RSI state:** `setStatus('active')` now
+  refuses an unreadable canonical state, and member registration requires an
+  active project.
 - **Artifact ingestion:** artifact IDs can no longer collide after path
   sanitizing; artifact rows + job update commit atomically; a DB failure rolls
   back the promoted final directory; staging is cleared before a retry; hashing
@@ -135,6 +146,7 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Regression tests added
 
 - destroyed group releases quota and group slot
+- scheduler refuses project/group mismatch and paused-project claims
 - state-path escape rejection
 - team-id collision rejection
 - project pause preserves manual group pause
@@ -153,6 +165,9 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 - terminal task clears group `currentTaskId`
 - one task cannot hold two GPU leases
 - unknown project cannot create a group through the API
+- released member can be re-registered without a primary-key conflict
+- Captain session cannot be registered as a member
+- project activation checks canonical-state readability
 
 ## Remaining limitations (not papered over)
 
@@ -172,7 +187,7 @@ remote state unknowable now enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 72 tests, 0 failures.
+- `npm run test:all` — 73 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push, deployment, real SSH, real GPU, or upstream modification.

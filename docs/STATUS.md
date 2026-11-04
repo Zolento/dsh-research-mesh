@@ -20,10 +20,10 @@ Commit: `3271774` plus the delivery-status follow-up
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit | 63 | pass |
+| Unit | 64 | pass |
 | Integration | 6 | pass |
 | End-to-end + fault injection | 3 | pass |
-| **Total** | **72** | **pass, 0 fail, 0 skip** |
+| **Total** | **73** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |

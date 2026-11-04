@@ -17,8 +17,8 @@ npm run test:all
 node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome
 ```
 
-`npm run test:all` is the aggregate: 72 tests after the group-control harness audit
-(63 unit + 6 integration + 3 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 73 tests after the group-control harness audit
+(64 unit + 6 integration + 3 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map

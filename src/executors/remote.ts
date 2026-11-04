@@ -118,6 +118,10 @@ export class RemoteJobExecutor {
     if (worker === undefined) throw new MeshError('CONFIG_INVALID', 'manifest worker disappeared', { manifest: validated.job_id });
     const existing = this.#store.getJob(validated.job_id);
     if (existing !== undefined && ['submitted', 'submitted_unconfirmed', 'running', 'succeeded', 'output_ready', 'ingested'].includes(existing.status)) {
+      if (['succeeded', 'output_ready', 'ingested'].includes(existing.status)) {
+        // A crash may have left a lease behind after the remote run finished.
+        this.#gpu.releaseForTask(task.taskId, `job is already ${existing.status}`);
+      }
       return {
         jobId: existing.jobId,
         status: existing.status,

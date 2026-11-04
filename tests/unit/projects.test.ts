@@ -174,13 +174,27 @@ test('project pause preserves a manually paused group and archive parks active g
       teams.push(await service.createTeam({ projectId: created.projectId, routeId: route, name, rootSessionId: `root-${name}` }));
     }
     service.pauseTeam(teams[1]?.teamId as string);
+    const queued = service.submitTask({
+      projectId: created.projectId, teamId: teams[0]?.teamId as string, type: 'local', title: 'queued-before-pause',
+      payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+    }).task;
     service.setProjectStatus(created.projectId, 'paused');
     assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'paused');
     assert.equal(service.getTeam(teams[1]?.teamId as string).status, 'paused');
     assert.equal(service.getTeam(teams[2]?.teamId as string).status, 'paused');
+    // Even if a group drifts back to active while its project is paused, the
+    // scheduler must not claim new work.
+    service.resumeTeam(teams[0]?.teamId as string);
+    assert.equal(service.claimNext(), undefined);
+    assert.throws(
+      () => service.claimTask(queued.taskId),
+      (error: unknown) => error instanceof MeshError && error.code === 'TASK_NOT_CLAIMABLE',
+    );
     service.setProjectStatus(created.projectId, 'active');
     assert.equal(service.getTeam(teams[0]?.teamId as string).status, 'active');
     assert.equal(service.getTeam(teams[1]?.teamId as string).status, 'paused', 'manual pause must survive project resume');
+    const claimed = service.claimNext();
+    assert.equal(claimed?.task.taskId, queued.taskId);
     assert.equal(service.getTeam(teams[2]?.teamId as string).status, 'active');
 
     service.setProjectStatus(created.projectId, 'archived');
@@ -285,13 +299,36 @@ test('member binding cannot name a group from another project', async () => {
   }
 });
 
-test('member identity is bound to its group and project', async () => {
+test('a task project id must match the group project', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    const team = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    assert.throws(
+      () => service.submitTask({
+        projectId: 'proj_other', teamId: team.teamId, type: 'local', title: 'cross-project',
+        payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+      }),
+      (error: unknown) => error instanceof MeshError && error.code === 'TEAM_NOT_FOUND',
+    );
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('member identity is bound to its group and project', async () => {
+  const project = makeTempProject();
+  const { service, host } = await makeService(project, { sessionBinding: 'dsh' });
   try {
     const state = statePath(project.root);
     const created = service.createProject({ name: 'research', rsiStateRef: state, repositoryRef: project.source });
     const team = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    await assert.rejects(
+      () => service.registerSubagent({ teamId: team.teamId, name: 'bad-member', role: 'experiment', sessionId: team.rootSessionId }),
+      (error: unknown) => error instanceof MeshError && error.code === 'SUBAGENT_DUPLICATE',
+    );
     const sub = await service.registerSubagent({ teamId: team.teamId, name: 'worker-1', role: 'experiment', sessionId: 'member-1' });
     const binding = service.sessionBinding(sub.sessionId);
     assert.equal(binding?.role, 'member');
@@ -301,10 +338,16 @@ test('member identity is bound to its group and project', async () => {
     assert.equal(service.sessionBinding(sub.sessionId), undefined);
     const rebound = service.attachMemberSession(created.projectId, team.teamId, sub.sessionId);
     assert.equal(rebound.role, 'member');
+    const reRegistered = await service.registerSubagent({
+      teamId: team.teamId, name: 'worker-1-reborn', role: 'experiment', sessionId: sub.sessionId,
+    });
+    assert.equal(reRegistered.sessionId, sub.sessionId);
+    assert.equal(service.agentModel(sub.sessionId)?.name, 'worker-1-reborn');
     await service.destroyTeam(team.teamId);
     assert.equal(service.sessionBinding(sub.sessionId), undefined);
     assert.equal(service.sessionBinding(team.rootSessionId), undefined);
     assert.equal(service.getProject(created.projectId).captainSessions.length, 0);
+    assert.equal(host.disposed.includes(sub.sessionId), true);
   } finally {
     await service.close();
     project.cleanup();
