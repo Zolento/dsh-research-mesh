@@ -3,6 +3,7 @@
 Date: 2026-11-05 (Asia/Shanghai)
 Branch: `feat/research-mesh-v0.1.0`
 Repository: `/home/lenovo/code/dsh-plugins/dsh-research-mesh` (local git, no remote)
+Commit: `3271774` plus the delivery-status follow-up
 
 ## Verified environment
 
