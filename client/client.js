@@ -40,6 +40,23 @@ window.__ModuleLoader__.load({
         back: '返回 Projects',
         open: '打开工作台',
         newProject: '关联研究项目',
+        newProjectHint: '选择一个已有的 Git 仓库；插件会自动检测 RSI route。不会创建或伪造 Research State。',
+        repositoryRoot: 'Git 仓库根目录',
+        repositoryRootHint: '整个仓库就是项目根；Mesh 控制目录和 worktree 由插件管理。',
+        chooseFolder: '选择文件夹',
+        picking: '选择中…',
+        inspect: '检测',
+        pickerUnavailable: '当前 Web GUI 不提供目录选择器，请直接输入绝对路径。',
+        repoDetected: '已检测',
+        repoRunnable: '当前运行时可以把该仓库作为可执行项目。',
+        repoNotRunnable: '该仓库会被注册为只读项目；当前运行时的 sourceDir 是',
+        rsiRoute: 'RSI 路线',
+        migrationRequired: '这个仓库还没有 RSI Research State。',
+        migrationHint: '插件不会自动生成科研状态。请先用 rsi-pipeline skill 完成 Bootstrap/start-project，或复制下面的迁移提示词。',
+        copyPrompt: '复制迁移提示词',
+        copied: '已复制',
+        copyManual: '请手动复制迁移提示词',
+        selectRouteFirst: '请先检测仓库并选择一个有效的 RSI route。',
         cancel: '取消',
         create: '关联',
         name: '项目名称',
@@ -284,6 +301,10 @@ window.__ModuleLoader__.load({
       .mesh-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
       .mesh-form { display: grid; gap: 10px; max-width: 680px; }
       .mesh-field { display: grid; gap: 4px; font-size: 13px; }
+      .mesh-path-row { display: flex; gap: 6px; align-items: stretch; }
+      .mesh-path-row .mesh-input { flex: 1; min-width: 0; }
+      .mesh-warn { border: 1px solid var(--dsw-alias-status-warning, #b54708); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 6px; }
+      .mesh-inline-note { border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 4px; }
       .mesh-input { width: 100%; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 8px; background: var(--dsw-alias-bg-layer-2, transparent); color: inherit; font: inherit; font-size: 13px; padding: 7px 10px; min-height: 32px; }
       .mesh-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #3b82f6); outline-offset: 1px; }
       .mesh-select { min-height: 32px; max-width: 100%; }
@@ -449,12 +470,77 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProjectForm({ t, onCancel, onCreated }) {
+    function ProjectForm({ ctx, t, onCancel, onCreated }) {
       const [form, setForm] = useState({ name: '', rsiStateRef: '', repositoryRef: '', description: '' })
+      const [inspection, setInspection] = useState(null)
       const [busy, setBusy] = useState(false)
+      const [picking, setPicking] = useState(false)
       const [error, setError] = useState(null)
+      const [copied, setCopied] = useState(false)
+      const set = (key, value) => setForm(previous => ({ ...previous, [key]: value }))
+      const applyInspection = result => {
+        setInspection(result)
+        const first = result.routes.find(route => route.valid)
+        setForm(previous => ({
+          ...previous,
+          name: previous.name === '' ? result.suggestedName : previous.name,
+          rsiStateRef: previous.rsiStateRef === '' && first !== undefined ? first.statePath : previous.rsiStateRef,
+        }))
+      }
+      const inspectPath = async path => {
+        const trimmed = path.trim()
+        if (trimmed === '') return
+        try {
+          const result = await api('/projects/inspect', { method: 'POST', body: JSON.stringify({ repositoryRef: trimmed }) })
+          applyInspection(result)
+          setError(null)
+        } catch (failure) {
+          setInspection(null)
+          setError(failure.message)
+        }
+      }
+      const pick = async () => {
+        if (typeof ctx.uiWorkspace?.pickDirectory !== 'function') {
+          setError(t('pickerUnavailable'))
+          return
+        }
+        setPicking(true)
+        setError(null)
+        try {
+          const path = await ctx.uiWorkspace.pickDirectory()
+          if (typeof path === 'string' && path !== '') {
+            set('repositoryRef', path)
+            await inspectPath(path)
+          }
+        } catch (failure) {
+          setError(String(failure?.message ?? failure))
+        } finally {
+          setPicking(false)
+        }
+      }
+      const migrationPrompt = inspection === null
+        ? ''
+        : `请在 Git 仓库 ${inspection.repositoryRef} 中按 rsi-pipeline skill 规范初始化研究项目：\n` +
+          '1. 读取 rsi-pipeline skill 的 references/project-layout.md 与 Bootstrap/start-project 入口；\n' +
+          '2. 保留现有代码和 Git 历史，不要重写或迁移业务代码；\n' +
+          '3. 按规范创建 .research-idea-pipeline/routes/A/research-state.json，state_version 必须存在，内容来自真实项目分析而不是模板占位；\n' +
+          '4. 运行 state_check.py 和项目规定的校验，报告无法自动判断的信息，禁止伪造科学状态；\n' +
+          '5. 完成后告诉我在 DSH Research Mesh 中应使用的 route 和 state 路径。'
+      const copyPrompt = async () => {
+        try {
+          await navigator.clipboard.writeText(migrationPrompt)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1500)
+        } catch {
+          window.prompt(t('copyManual'), migrationPrompt)
+        }
+      }
       const submit = event => {
         event.preventDefault()
+        if (form.rsiStateRef === '') {
+          setError(t('selectRouteFirst'))
+          return
+        }
         setBusy(true)
         setError(null)
         api('/projects', { method: 'POST', body: JSON.stringify(form) })
@@ -462,21 +548,58 @@ window.__ModuleLoader__.load({
           .catch(failure => setError(failure.message))
           .finally(() => setBusy(false))
       }
+      const routes = inspection?.routes ?? []
+      const routeField = routes.length > 1
+        ? h('label', { className: 'mesh-field' }, t('rsiRoute'),
+          h('select', {
+            className: 'mesh-input mesh-select',
+            value: form.rsiStateRef,
+            onChange: event => set('rsiStateRef', event.target.value),
+          }, ...routes.map(route => h('option', { key: route.routeId, value: route.statePath },
+            `${route.routeId} · v${route.stateVersion ?? '?'}${route.valid ? '' : ' · invalid'}`))))
+        : h('label', { className: 'mesh-field' }, t('rsiState'),
+          h('input', {
+            className: 'mesh-input', required: true,
+            placeholder: '/repo/.research-idea-pipeline/routes/A/research-state.json',
+            value: form.rsiStateRef, onChange: event => set('rsiStateRef', event.target.value),
+          }))
+      const status = inspection === null ? null : h('div', { className: inspection.runnable ? 'mesh-inline-note' : 'mesh-warn' },
+        h('div', null, `${t('repoDetected')}: ${inspection.routes.length} RSI route(s)`),
+        h('div', { className: 'mesh-muted' }, inspection.runnable
+          ? t('repoRunnable')
+          : `${t('repoNotRunnable')} ${inspection.configuredSourceDir}`))
       return h('div', { className: 'mesh-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('newProject') },
         h('form', { className: 'mesh-modal-card', onSubmit: submit },
           h('h2', { className: 'mesh-h2' }, t('newProject')),
-          h('p', { className: 'mesh-subtitle' }, t('rsiState')),
+          h('p', { className: 'mesh-subtitle' }, t('newProjectHint')),
           error === null ? null : h('div', { className: 'mesh-error', role: 'alert' }, error),
+          h('label', { className: 'mesh-field' }, t('repositoryRoot'),
+            h('div', { className: 'mesh-path-row' },
+              h('input', {
+                className: 'mesh-input', required: true,
+                placeholder: '/home/you/code/MyProject',
+                value: form.repositoryRef,
+                onChange: event => set('repositoryRef', event.target.value),
+                onBlur: event => { if (inspection === null) void inspectPath(event.target.value) },
+              }),
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: pick, disabled: picking },
+                picking ? t('picking') : t('chooseFolder')),
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => inspectPath(form.repositoryRef) }, t('inspect'))),
+            h('div', { className: 'mesh-muted' }, t('repositoryRootHint'))),
           h('label', { className: 'mesh-field' }, t('name'),
-            h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => setForm({ ...form, name: event.target.value }) })),
-          h('label', { className: 'mesh-field' }, t('rsiState'),
-            h('input', { className: 'mesh-input', required: true, placeholder: '/project/.research-idea-pipeline/routes/A/research-state.json', value: form.rsiStateRef, onChange: event => setForm({ ...form, rsiStateRef: event.target.value }) })),
-          h('label', { className: 'mesh-field' }, t('repository'),
-            h('input', { className: 'mesh-input', required: true, placeholder: '/project/source', value: form.repositoryRef, onChange: event => setForm({ ...form, repositoryRef: event.target.value }) })),
+            h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => set('name', event.target.value) })),
+          status,
+          inspection?.migrationRequired === true
+            ? h('div', { className: 'mesh-warn' },
+              h('div', null, t('migrationRequired')),
+              h('div', { className: 'mesh-muted' }, t('migrationHint')),
+              h('div', { className: 'mesh-actions' },
+                h('button', { className: 'mesh-btn', type: 'button', onClick: copyPrompt }, copied ? t('copied') : t('copyPrompt'))))
+            : routeField,
           h('label', { className: 'mesh-field' }, t('description'),
-            h('textarea', { className: 'mesh-input', rows: 3, value: form.description, onChange: event => setForm({ ...form, description: event.target.value }) })),
+            h('textarea', { className: 'mesh-input', rows: 3, value: form.description, onChange: event => set('description', event.target.value) })),
           h('div', { className: 'mesh-actions' },
-            h('button', { className: 'mesh-btn primary', type: 'submit', disabled: busy }, busy ? t('saving') : t('create')),
+            h('button', { className: 'mesh-btn primary', type: 'submit', disabled: busy || inspection?.migrationRequired === true }, busy ? t('saving') : t('create')),
             h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel')))))
     }
 
@@ -520,7 +643,7 @@ window.__ModuleLoader__.load({
           h('button', { className: 'mesh-btn primary', onClick: () => setCreating(true) }, t('newProject')))
         : h('div', { className: 'mesh-list' }, ...projects.map(projectCard))
       const modal = creating
-        ? h(ProjectForm, { t, onCancel: () => setCreating(false), onCreated: () => { setCreating(false); state.reload() } })
+        ? h(ProjectForm, { ctx, t, onCancel: () => setCreating(false), onCreated: () => { setCreating(false); state.reload() } })
         : null
       return h('div', { className: 'mesh-inner' },
         header,

@@ -7,7 +7,8 @@
  * created by the Team Manager when the corresponding Session exists.
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { isAbsolute, relative as relativePath, resolve } from 'node:path';
 import { MeshError } from '../errors.ts';
 import type { MeshConfig } from '../config/types.ts';
@@ -25,6 +26,27 @@ export interface CreateProjectInput {
   readonly rsiStateRef: string;
   /** Absolute Git repository path. */
   readonly repositoryRef: string;
+}
+
+/** One RSI route state discovered in a repository. */
+export interface RepositoryRouteState {
+  readonly routeId: string;
+  readonly statePath: string;
+  readonly stateVersion: string | null;
+  readonly valid: boolean;
+  readonly error: string | null;
+}
+
+/** Read-only inspection used by the attach-project form. */
+export interface RepositoryInspection {
+  readonly repositoryRef: string;
+  readonly suggestedName: string;
+  readonly routes: readonly RepositoryRouteState[];
+  readonly runnable: boolean;
+  readonly configuredSourceDir: string;
+  readonly controlDir: string;
+  readonly worktreesDir: string;
+  readonly migrationRequired: boolean;
 }
 
 /** Project plus derived Workbench diagnostics. */
@@ -57,6 +79,66 @@ export class ProjectRegistry {
     this.#config = config;
     this.#store = store;
     this.#logger = logger;
+  }
+
+  /**
+   * Inspect an existing repository without registering it.
+   *
+   * The form uses this to derive the RSI state path and to explain when a
+   * repository has not been bootstrapped by the RSI skill yet. It never creates
+   * state or modifies the checkout.
+   * @param repositoryRef - absolute Git checkout path.
+   * @returns routes and runtime capabilities.
+   */
+  inspect(repositoryRef: string): RepositoryInspection {
+    if (!isAbsolute(repositoryRef)) {
+      throw new MeshError('INVALID_ARGUMENT', 'repository path must be absolute');
+    }
+    const root = resolve(repositoryRef);
+    if (!existsSync(resolve(root, '.git'))) {
+      throw new MeshError('CONFIG_INVALID', 'repository path is not a Git checkout', { repositoryRef: root });
+    }
+    const routesRoot = join(root, '.research-idea-pipeline', 'routes');
+    const routes: RepositoryRouteState[] = [];
+    if (existsSync(routesRoot)) {
+      for (const entry of readdirSync(routesRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const statePath = join(routesRoot, entry.name, 'research-state.json');
+        if (!existsSync(statePath)) continue;
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(statePath, 'utf8'));
+          const version = stateVersionOf(parsed);
+          routes.push({
+            routeId: entry.name,
+            statePath,
+            stateVersion: version,
+            valid: version !== null,
+            error: version === null ? 'research-state.json has no state_version' : null,
+          });
+        } catch (error) {
+          routes.push({
+            routeId: entry.name,
+            statePath,
+            stateVersion: null,
+            valid: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    routes.sort((a, b) => a.routeId.localeCompare(b.routeId));
+    let runnable = false;
+    try { runnable = realpathSync(root) === realpathSync(this.#config.sourceDir); } catch { runnable = false; }
+    return {
+      repositoryRef: root,
+      suggestedName: basename(root),
+      routes,
+      runnable,
+      configuredSourceDir: this.#config.sourceDir,
+      controlDir: this.#config.controlDir,
+      worktreesDir: this.#config.worktreesDir,
+      migrationRequired: routes.length === 0,
+    };
   }
 
   /**

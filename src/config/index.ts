@@ -7,7 +7,7 @@
  * raise.
  */
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { MeshError } from '../errors.ts';
@@ -241,25 +241,29 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     'projectRoot',
   );
 
-  const controlDir = insideRoot(
-    projectRoot,
-    absolutePath(optionalString(input.controlDir, 'controlDir') ?? '.research-mesh', 'controlDir', projectRoot),
-    'controlDir',
-  );
   const sourceDir = insideRoot(
     projectRoot,
     absolutePath(optionalString(input.sourceDir, 'sourceDir') ?? 'source', 'sourceDir', projectRoot),
     'sourceDir',
   );
-  const worktreesDir = insideRoot(
+  // Whole-repository projects (sourceDir === projectRoot) are common: an
+  // existing RSI Git checkout is the project itself, so control state and
+  // worktrees must be allowed to live beside it instead of inside it.
+  const wholeRepo = sourceDir === projectRoot;
+  const controlRaw = absolutePath(
+    optionalString(input.controlDir, 'controlDir') ?? (wholeRepo ? join(projectRoot, '.research-mesh') : '.research-mesh'),
+    'controlDir',
     projectRoot,
-    absolutePath(optionalString(input.worktreesDir, 'worktreesDir') ?? 'worktrees', 'worktreesDir', projectRoot),
-    'worktreesDir',
   );
+  const controlDir = wholeRepo ? controlRaw : insideRoot(projectRoot, controlRaw, 'controlDir');
+  const worktreesRaw = absolutePath(
+    optionalString(input.worktreesDir, 'worktreesDir') ?? (wholeRepo ? join(controlDir, 'worktrees') : 'worktrees'),
+    'worktreesDir',
+    projectRoot,
+  );
+  const worktreesDir = wholeRepo ? worktreesRaw : insideRoot(projectRoot, worktreesRaw, 'worktreesDir');
   if (sourceDir === worktreesDir) invalid('sourceDir and worktreesDir must differ');
-  if (controlDir === sourceDir || controlDir.startsWith(sourceDir + sep)) {
-    invalid('controlDir must not be inside sourceDir');
-  }
+  if (controlDir === sourceDir) invalid('controlDir must differ from sourceDir');
   if (worktreesDir === sourceDir || worktreesDir.startsWith(sourceDir + sep)) {
     invalid('worktreesDir must not be inside sourceDir');
   }
@@ -365,11 +369,12 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     invalid('logLevel must be debug, info, warn or error', { logLevel: logLevelRaw });
   }
 
-  const databasePath = insideRoot(
-    projectRoot,
-    absolutePath(optionalString(input.databasePath, 'databasePath') ?? `${controlDir}${sep}runtime.sqlite`, 'databasePath', projectRoot),
+  const databaseRaw = absolutePath(
+    optionalString(input.databasePath, 'databasePath') ?? `${controlDir}${sep}runtime.sqlite`,
     'databasePath',
+    projectRoot,
   );
+  const databasePath = wholeRepo ? databaseRaw : insideRoot(projectRoot, databaseRaw, 'databasePath');
   const modelSettingsPath = absolutePath(
     optionalString(input.modelSettingsPath, 'modelSettingsPath') ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-research-mesh', 'model-settings.json'),
     'modelSettingsPath',
@@ -409,8 +414,15 @@ export function assertGitSource(config: MeshConfig): void {
     throw new MeshError('CONFIG_INVALID', 'sourceDir must contain a Git checkout', { sourceDir: config.sourceDir });
   }
   if (!existsSync(config.controlDir)) {
-    throw new MeshError('CONFIG_INVALID', 'controlDir does not exist; initialize the project first', {
-      controlDir: config.controlDir,
-    });
+    // The Mesh owns its control directory; creating it is the documented
+    // setup path for a whole-repository project. RSI state is never created.
+    try {
+      mkdirSync(config.controlDir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      throw new MeshError('CONFIG_INVALID', 'controlDir does not exist and could not be created', {
+        controlDir: config.controlDir,
+        error: String(error),
+      });
+    }
   }
 }

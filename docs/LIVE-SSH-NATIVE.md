@@ -69,8 +69,8 @@ explicit `confirm:true` for Destroy.
 ## Main profile
 
 `dsh-research-mesh` is installed in the running `web` profile and configured
-against `/home/lenovo/research-mesh` (a starter source checkout + RSI example
-state). The running GUI still needs one restart to activate the new bundle row;
+against `/home/lenovo/code/myproj/MoSA` as a whole-repository project (see
+[PROJECT-ONBOARDING.md](PROJECT-ONBOARDING.md)). The running GUI still needs one restart to activate the new bundle row;
 that restart was not performed by this test.
 
 ## Remaining gap

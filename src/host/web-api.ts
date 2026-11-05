@@ -164,6 +164,11 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: await service.projectWorkbench(projectId) });
         return;
       }
+      if (path === '/projects/inspect' && method === 'POST') {
+        const body = await readJson(req);
+        send(res, 200, { ok: true, value: service.inspectProjectRepository(stringField(body, 'repositoryRef')) });
+        return;
+      }
       if (path === '/projects' && method === 'POST') {
         const body = await readJson(req);
         const project = service.createProject({

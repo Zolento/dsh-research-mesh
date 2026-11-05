@@ -334,6 +334,11 @@ export class MeshService {
     return this.#requireProjects().create(input);
   }
 
+  /** Inspect a repository for the attach-project form without modifying it. */
+  inspectProjectRepository(repositoryRef: string): import('./projects/registry.ts').RepositoryInspection {
+    return this.#requireProjects().inspect(repositoryRef);
+  }
+
   listProjects(): readonly ProjectView[] {
     return this.#requireProjects().list();
   }

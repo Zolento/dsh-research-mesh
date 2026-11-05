@@ -1,7 +1,7 @@
 /** Project registry, RSI validation and explicit session bindings. */
 
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeService, makeTempProject } from '../helpers/env.ts';
@@ -370,6 +370,29 @@ test('member identity is bound to its group and project', async () => {
     assert.equal(service.sessionBinding(team.rootSessionId), undefined);
     assert.equal(service.getProject(created.projectId).captainSessions.length, 0);
     assert.equal(host.disposed.includes(sub.sessionId), true);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('repository inspection discovers RSI routes and reports migration need', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const before = service.inspectProjectRepository(project.source);
+    assert.equal(before.migrationRequired, true);
+    assert.deepEqual(before.routes, []);
+    assert.equal(before.runnable, true);
+    const routeDir = join(project.source, '.research-idea-pipeline', 'routes', 'A');
+    mkdirSync(routeDir, { recursive: true });
+    writeFileSync(join(routeDir, 'research-state.json'), JSON.stringify({ state_version: '7' }));
+    const after = service.inspectProjectRepository(project.source);
+    assert.equal(after.migrationRequired, false);
+    assert.equal(after.routes.length, 1);
+    assert.equal(after.routes[0]?.routeId, 'A');
+    assert.equal(after.routes[0]?.stateVersion, '7');
+    assert.equal(after.routes[0]?.valid, true);
   } finally {
     await service.close();
     project.cleanup();
