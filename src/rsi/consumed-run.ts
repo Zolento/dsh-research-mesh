@@ -8,7 +8,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { MeshError } from '../errors.ts';
 import type { RsiAuthorization } from './adapter.ts';
@@ -217,9 +217,6 @@ function readShimSpec(path: string): ShimSpec {
 
 function writeJournal(path: string | undefined, value: Record<string, unknown>): void {
   if (path === undefined) return;
-  // Imported lazily to keep this module's testable protocol independent of fs write policy.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${JSON.stringify({ schema: 'dsh-research-mesh/consumed-run-journal@1', at: new Date().toISOString(), ...value }, null, 2)}\n`, { mode: 0o600 });
 }

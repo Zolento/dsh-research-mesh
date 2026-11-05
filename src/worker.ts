@@ -7,6 +7,7 @@
  * verification result; the worker never fabricates an authorization.
  */
 
+import { readFileSync } from 'node:fs';
 import { MeshError } from './errors.ts';
 import type { MeshConfig } from './config/types.ts';
 import type { MeshLogger } from './util/logger.ts';
@@ -19,6 +20,8 @@ import type { WorkspaceManager } from './workspaces/manager.ts';
 import type { LocalExecutor } from './executors/local.ts';
 import type { ExperimentJobService } from './executors/job-service.ts';
 import type { RsiAdapter } from './rsi/adapter.ts';
+import { runConsumedShim } from './rsi/consumed-run.ts';
+import { dirname, join } from 'node:path';
 import type { IngestionResult } from './executors/remote.ts';
 
 /** Payload for a controller-local task. */
@@ -46,6 +49,13 @@ export interface ExperimentTaskPayload {
     readonly schedulerPath: string;
     readonly receiptPath: string;
     readonly ledgerPath?: string;
+    /** Required for the blocking consumed coordinator; absent uses direct verify. */
+    readonly shim?: {
+      readonly specPath: string;
+      readonly resultPath: string;
+      readonly journalPath?: string;
+      readonly timeoutMs: number;
+    };
   };
   readonly condaEnvironment?: string;
   readonly artifactDestination?: string;
@@ -262,6 +272,32 @@ export class MeshWorker {
     }
   }
 
+  #readReceiptId(path: string): string {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)
+      || typeof (parsed as { id?: unknown }).id !== 'string') {
+      throw new MeshError('RSI_AUTHORIZATION_INVALID', 'receipt has no id', { path });
+    }
+    return (parsed as { id: string }).id;
+  }
+
+  async #waitForConsumedJob(jobId: string, timeoutMs: number): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try { await this.#jobs.query(jobId); } catch { /* remote may not have state yet */ }
+      const job = this.#store.getJob(jobId);
+      if (job === undefined) return 1;
+      if (job.status === 'output_ready') {
+        const ingested = await this.#jobs.collect(jobId).catch(() => null);
+        return ingested === null ? 1 : 0;
+      }
+      if (job.status === 'ingested' || job.status === 'succeeded') return 0;
+      if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'reconcile_required') return 1;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return 1;
+  }
+
   async #runExperiment(task: MeshTaskView, attemptId: string): Promise<void> {
     const payload = task.payload as Partial<ExperimentTaskPayload>;
     const rsi = payload.rsi;
@@ -274,6 +310,46 @@ export class MeshWorker {
     // consumes the ledger entry; the real wrapper comes from a separate
     // execution manifest.
     const executionManifestPath = rsi.executionManifestPath ?? rsi.manifestPath;
+    const shim = rsi.shim;
+    const workerId = payload.workerId;
+    const gpuId = payload.gpuId;
+    if (rsi.mode === 'consumed' && shim !== undefined) {
+      const runner = this.#rsi.runner();
+      const ledgerPath = rsi.ledgerPath ?? join(dirname(rsi.statePath), '.execution');
+      await runConsumedShim({
+        python: runner.python,
+        script: runner.script,
+        statePath: rsi.statePath,
+        manifestPath: rsi.manifestPath,
+        schedulerPath: rsi.schedulerPath,
+        receiptPath: rsi.receiptPath,
+        ledgerPath,
+        experimentId: rsi.experimentId,
+        shimSpecPath: shim.specPath,
+        shimResultPath: shim.resultPath,
+        timeoutMs: shim.timeoutMs,
+        ...(shim.journalPath === undefined ? {} : { journalPath: shim.journalPath }),
+      }, {
+        receiptId: () => String(this.#readReceiptId(rsi.receiptPath)),
+        verify: () => this.#rsi.verifyConsumed({ ...inputBase(rsi), ledgerPath }),
+        onConsumed: async authorization => {
+          const built = await this.#jobs.createManifest({
+            taskId: task.taskId,
+            workerId,
+            gpuId,
+            rsiManifestPath: executionManifestPath,
+            authorization,
+            ...(payload.condaEnvironment === undefined ? {} : { condaEnvironment: payload.condaEnvironment }),
+            ...(payload.artifactDestination === undefined ? {} : { artifactDestination: payload.artifactDestination }),
+            ...(payload.requiredArtifacts === undefined ? {} : { requiredArtifacts: payload.requiredArtifacts }),
+            ...(payload.environment === undefined ? {} : { environment: payload.environment }),
+          });
+          await this.#jobs.submit(task.taskId, built.manifest);
+          return await this.#waitForConsumedJob(built.manifest.job_id, shim.timeoutMs);
+        },
+      });
+      return;
+    }
     const input = {
       projectId: task.projectId,
       routeId: rsi.routeId,
@@ -302,4 +378,10 @@ export class MeshWorker {
     void attemptId;
     this.#logger.info('experiment submitted', { taskId: task.taskId, jobId: built.manifest.job_id });
   }
+}
+
+function inputBase(rsi: NonNullable<ExperimentTaskPayload['rsi']>): {
+  projectId: string; routeId: string; experimentId: string; statePath: string; manifestPath: string; schedulerPath: string; receiptPath: string;
+} {
+  return { projectId: 'unused', routeId: rsi.routeId, experimentId: rsi.experimentId, statePath: rsi.statePath, manifestPath: rsi.manifestPath, schedulerPath: rsi.schedulerPath, receiptPath: rsi.receiptPath };
 }

@@ -199,8 +199,11 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 - **consumed-ledger** — the blocking-shim rendezvous (`src/rsi/blocking-shim.ts`)
   is implemented and tested: wait mode mirrors the Mesh exit code, consume-only
   mode lets RSI consume once before Mesh launches, and the worker accepts a
-  separate shim authorization manifest plus the real execution manifest.
-  A single coordinator for the complete consumed run is still open.
+  separate shim authorization manifest plus the real execution manifest, and
+  `runConsumedShim` coordinates the RSI process, consume wait, verification and
+  Mesh callback. Its unit tests cover success, failed launch release and a
+  missing consume; the installed RSI CLI end-to-end still needs a real shim
+  manifest.
 - **Real SSH / conda / GPU** — validated against localhost OpenSSH with a
   temporary key: job staging, wrapper, real conda `torch`, RTX 4060 Ti,
   `SshGpuProbe`, artifact download and ingestion all passed. The probe originally
@@ -227,7 +230,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 93 tests, 0 failures.
+- `npm run test:all` — 96 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push/deployment or upstream modification. Real localhost SSH and local GPU were exercised in [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).

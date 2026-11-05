@@ -46,7 +46,12 @@ window.__ModuleLoader__.load({
         chooseFolder: '选择文件夹',
         picking: '选择中…',
         inspect: '检测',
-        pickerUnavailable: '当前 Web GUI 不提供目录选择器，请直接输入绝对路径。',
+        pickerUnavailable: '当前 Web GUI 不提供目录浏览器，请直接输入绝对路径。',
+        browseTitle: '选择 Git 仓库目录',
+        up: '上级',
+        chooseCurrent: '选择当前目录',
+        browserLoading: '正在读取目录…',
+        browserEmpty: '这个目录没有子目录。',
         repoDetected: '已检测',
         repoRunnable: '当前运行时可以把该仓库作为可执行项目。',
         repoNotRunnable: '该仓库会被注册为只读项目；当前运行时的 sourceDir 是',
@@ -303,6 +308,10 @@ window.__ModuleLoader__.load({
       .mesh-field { display: grid; gap: 4px; font-size: 13px; }
       .mesh-path-row { display: flex; gap: 6px; align-items: stretch; }
       .mesh-path-row .mesh-input { flex: 1; min-width: 0; }
+      .mesh-browser { display: grid; gap: 8px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 10px; padding: 10px; background: var(--dsw-alias-bg-layer-2, transparent); }
+      .mesh-browser-list { display: grid; gap: 4px; max-height: 240px; overflow: auto; }
+      .mesh-browser-entry { text-align: left; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+      .mesh-browser-entry:hover { background: var(--dsw-alias-bg-layer-3, rgba(128,128,128,.12)); }
       .mesh-warn { border: 1px solid var(--dsw-alias-status-warning, #b54708); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 6px; }
       .mesh-inline-note { border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 4px; }
       .mesh-input { width: 100%; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 8px; background: var(--dsw-alias-bg-layer-2, transparent); color: inherit; font: inherit; font-size: 13px; padding: 7px 10px; min-height: 32px; }
@@ -473,6 +482,7 @@ window.__ModuleLoader__.load({
     function ProjectForm({ ctx, t, onCancel, onCreated }) {
       const [form, setForm] = useState({ name: '', rsiStateRef: '', repositoryRef: '', description: '' })
       const [inspection, setInspection] = useState(null)
+      const [browser, setBrowser] = useState(null)
       const [busy, setBusy] = useState(false)
       const [picking, setPicking] = useState(false)
       const [error, setError] = useState(null)
@@ -499,24 +509,31 @@ window.__ModuleLoader__.load({
           setError(failure.message)
         }
       }
-      const pick = async () => {
-        if (typeof ctx.uiWorkspace?.pickDirectory !== 'function') {
+      const browse = async path => {
+        if (typeof ctx.uiWorkspace?.listDirectory !== 'function') {
           setError(t('pickerUnavailable'))
           return
         }
-        setPicking(true)
-        setError(null)
+        setBrowser(previous => ({ ...(previous ?? {}), loading: true, error: null }))
         try {
-          const path = await ctx.uiWorkspace.pickDirectory()
-          if (typeof path === 'string' && path !== '') {
-            set('repositoryRef', path)
-            await inspectPath(path)
-          }
+          const listing = await ctx.uiWorkspace.listDirectory(path)
+          setBrowser({ path: listing.path, listing, loading: false, error: null })
         } catch (failure) {
-          setError(String(failure?.message ?? failure))
-        } finally {
-          setPicking(false)
+          setBrowser(previous => ({ ...(previous ?? { path: path ?? '' }), loading: false, error: String(failure?.message ?? failure) }))
         }
+      }
+      const pick = async () => {
+        // Never call the native picker here: on the Web it opens a host dialog
+        // and can hang the await. The composed listDirectory browser is the
+        // same primitive the Workspace add flow uses and always stays in-page.
+        await browse(form.repositoryRef.trim() === '' ? undefined : form.repositoryRef.trim())
+      }
+      const chooseBrowserPath = async () => {
+        if (browser?.path === undefined) return
+        const path = browser.path
+        setBrowser(null)
+        set('repositoryRef', path)
+        await inspectPath(path)
       }
       const migrationPrompt = inspection === null
         ? ''
@@ -586,6 +603,27 @@ window.__ModuleLoader__.load({
                 picking ? t('picking') : t('chooseFolder')),
               h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => inspectPath(form.repositoryRef) }, t('inspect'))),
             h('div', { className: 'mesh-muted' }, t('repositoryRootHint'))),
+          browser === null ? null : h('div', { className: 'mesh-browser' },
+            h('div', { className: 'mesh-row' },
+              h('strong', null, t('browseTitle')),
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => setBrowser(null) }, t('cancel'))),
+            h('div', { className: 'mesh-code' }, browser.path ?? browser.listing?.home ?? ''),
+            h('div', { className: 'mesh-actions' },
+              h('button', { className: 'mesh-btn ghost', type: 'button', disabled: browser.loading || (browser.listing?.crumbs?.length ?? 0) <= 1, onClick: () => {
+                const crumbs = browser.listing?.crumbs ?? []
+                const parent = crumbs.length >= 2 ? crumbs[crumbs.length - 2]?.path : undefined
+                void browse(parent)
+              } }, t('up')),
+              h('button', { className: 'mesh-btn primary', type: 'button', disabled: browser.loading || browser.path === undefined, onClick: chooseBrowserPath }, t('chooseCurrent'))),
+            browser.error === null || browser.error === undefined ? null : h('div', { className: 'mesh-error', role: 'alert' }, browser.error),
+            browser.loading === true ? h('div', { className: 'mesh-muted' }, t('browserLoading')) : null,
+            browser.listing === undefined || browser.loading === true ? null : h('div', { className: 'mesh-browser-list' },
+              (browser.listing.entries ?? []).length === 0
+                ? h('div', { className: 'mesh-muted' }, t('browserEmpty'))
+                : browser.listing.entries.map(entry => h('button', {
+                  key: entry.path, type: 'button', className: 'mesh-browser-entry',
+                  onClick: () => { void browse(entry.path) },
+                }, `📁 ${entry.name}`)))),
           h('label', { className: 'mesh-field' }, t('name'),
             h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => set('name', event.target.value) })),
           status,

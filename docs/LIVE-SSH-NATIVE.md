@@ -76,6 +76,6 @@ that restart was not performed by this test.
 ## Remaining gap
 
 Consumed-ledger support now accepts a shim **authorization manifest** separately
-from the real **execution manifest**, and the shim has a consume-only mode. A
-full real consumed-ledger run (RSI consumes once, Mesh verifies, Mesh launches,
-crash recovery) is still not wired as a single coordinator.
+from the real **execution manifest**, and `runConsumedShim` wires the process,
+consume wait, verification and Mesh callback. The installed RSI CLI end-to-end
+still needs a real shim manifest; crash recovery after consume remains open.

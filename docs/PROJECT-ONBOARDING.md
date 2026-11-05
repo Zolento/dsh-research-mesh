@@ -59,3 +59,7 @@ Copy this into a DSH/Claude session when the repository has no RSI state:
 The plugin creates only Mesh control directories and worktrees. A canonical
 `research-state.json` must come from the RSI workflow; the UI rejects a state
 without `state_version`.
+
+The **选择文件夹** button never invokes the Host-native picker. It uses
+`uiWorkspace.listDirectory()` — the same remote browsing primitive as the
+Workspace add flow — so the chooser always renders inside the Web page.

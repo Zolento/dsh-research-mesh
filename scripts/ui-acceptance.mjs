@@ -270,6 +270,23 @@ async function main() {
     await waitFor(async () => evaluate('document.body.innerText.includes("3D Wave-TOF")'), 'project list');
     await shot('projects-1440.png');
 
+    // Attach form: typed inspection works in the composed Web picker.
+    await clickText('关联研究项目');
+    await waitFor(async () => evaluate('document.querySelector(".mesh-modal") !== null'), 'attach modal');
+    await evaluate(`(() => {
+      const input = document.querySelector('.mesh-modal input');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(join(project, 'source'))});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await clickText('检测');
+    await waitFor(async () => evaluate('document.body.innerText.includes("已检测") || document.body.innerText.includes("没有 RSI")'), 'repository inspection');
+    // The native picker is absent in the Web build; the composed browser must open.
+    await clickText('选择文件夹');
+    await waitFor(async () => evaluate('document.querySelector(".mesh-browser") !== null'), 'composed directory browser');
+    await clickText('取消');
+
     // Workbench.
     await click('.mesh-project');
     await waitFor(async () => evaluate('document.body.innerText.includes("Project Workbench") || document.body.innerText.includes("group-a")'), 'workbench');

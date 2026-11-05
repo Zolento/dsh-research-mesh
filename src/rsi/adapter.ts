@@ -281,6 +281,21 @@ export class RsiAdapter {
   }
 
   /**
+   * Return the executable command for `experiment_execute.py`.
+   * @returns python executable and script path.
+   */
+  runner(): { readonly python: string; readonly script: string } {
+    const discovery = this.discover();
+    if (!discovery.available || discovery.skillPath === null) {
+      throw new MeshError('RSI_UNAVAILABLE', discovery.error ?? 'RSI skill is unavailable', { discovery });
+    }
+    return {
+      python: this.#config.rsi.pythonExecutable,
+      script: join(discovery.skillPath, 'scripts/experiment_execute.py'),
+    };
+  }
+
+  /**
    * Verify a receipt that RSI's own `run --execute` has already consumed.
    * This is the production path used by the blocking Mesh shim.
    * @param input - receipt, manifest, scheduler and ledger paths.

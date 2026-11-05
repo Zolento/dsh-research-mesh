@@ -21,10 +21,10 @@ Commit: `0a69688` (rc1 adaptation); prior audit commits `35ca703`, `9a7c757`, `4
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit | 81 | pass |
+| Unit | 84 | pass |
 | Integration | 8 | pass |
 | End-to-end + fault injection | 4 | pass |
-| **Total** | **93** | **pass, 0 fail, 0 skip** |
+| **Total** | **96** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |
