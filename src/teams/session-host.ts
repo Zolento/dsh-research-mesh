@@ -101,6 +101,26 @@ export interface DshSessionControllerLike {
 }
 
 /** Structural subset of the Host WorkspaceController. */
+/** Structural subset of the Host SubagentRuntime used for native continuable children. */
+export interface DshSubagentRuntimeLike {
+  startActivation(spec: {
+    provider: string;
+    label: string;
+    request: {
+      prompt: readonly { type: 'text'; text: string }[];
+      parent: unknown;
+      cwd?: string;
+      agentOptions?: { provider: string; model: string };
+    };
+    signal: AbortSignal;
+    delivery: 'caller' | 'parent';
+  }): Promise<{
+    childId: string;
+    result: Promise<{ stopReason: string }>;
+    dispose(): Promise<void>;
+  }>;
+}
+
 export interface DshWorkspaceControllerLike {
   create(request: { path: string }): Promise<{ workspace: { workspaceId: string } }>;
   insertSessionBefore?(request: { workspaceId: string; sessionId: string; beforeSessionId?: string }): Promise<unknown>;
@@ -111,6 +131,8 @@ export interface DshHostContext {
   readonly agents?: DshAgentsLike;
   readonly sessionController?: DshSessionControllerLike;
   readonly workspaceController?: DshWorkspaceControllerLike;
+  readonly subagents?: DshSubagentRuntimeLike;
+  readonly nativeMembers?: boolean;
 }
 
 /** Production session host backed by DSH's AgentRegistry. */
@@ -122,6 +144,9 @@ export class DshSessionHost implements SessionHost {
   readonly #controllerSessions = new Set<string>();
   #sessionController: DshSessionControllerLike | undefined;
   #workspaceController: DshWorkspaceControllerLike | undefined;
+  #subagents: DshSubagentRuntimeLike | undefined;
+  readonly #nativeMembers: boolean;
+  readonly #nativeActivations = new Map<string, { dispose(): Promise<void> }>();
 
   /** Attach the Host AgentRegistry when it appears after plugin activation. */
   attachAgents(agents: DshAgentsLike): void {
@@ -136,6 +161,11 @@ export class DshSessionHost implements SessionHost {
   /** Attach the Host WorkspaceController when it appears after plugin activation. */
   attachWorkspaceController(controller: DshWorkspaceControllerLike): void {
     this.#workspaceController = controller;
+  }
+
+  /** Attach the Host SubagentRuntime when it appears after plugin activation. */
+  attachSubagents(subagents: DshSubagentRuntimeLike): void {
+    this.#subagents = subagents;
   }
 
   #discardControllerSession(sessionId: string, reason: string): void {
@@ -155,6 +185,8 @@ export class DshSessionHost implements SessionHost {
     this.#agents = ctx.agents;
     this.#sessionController = ctx.sessionController;
     this.#workspaceController = ctx.workspaceController;
+    this.#subagents = ctx.subagents;
+    this.#nativeMembers = ctx.nativeMembers === true;
   }
 
   /**
@@ -269,6 +301,43 @@ export class DshSessionHost implements SessionHost {
         teamId: input.teamId,
       });
     }
+    if (this.#nativeMembers) {
+      const runtime = this.#subagents;
+      const agents = this.#agents;
+      const parent = agents?.get?.(input.rootSessionId);
+      if (runtime === undefined || parent === undefined) {
+        throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'native member creation requires the live Captain and subagents runtime', {
+          teamId: input.teamId,
+          rootSessionId: input.rootSessionId,
+        });
+      }
+      const activation = await runtime.startActivation({
+        provider: 'spawn',
+        label: `Mesh member ${input.name}`,
+        request: {
+          prompt: [{
+            type: 'text',
+            text: `You are a Research Mesh member named ${input.name} with role ${input.role}. Reply with exactly MESH_MEMBER_READY and do not use tools.`,
+          }],
+          parent,
+          cwd: input.cwd,
+          agentOptions: { provider: input.provider, model: input.model },
+        },
+        signal: new AbortController().signal,
+        delivery: 'caller',
+      });
+      const result = await activation.result;
+      if (result.stopReason !== 'completed') {
+        throw new MeshError('SESSION_CREATE_FAILED', 'native member activation did not complete', {
+          teamId: input.teamId,
+          childId: activation.childId,
+          stopReason: result.stopReason,
+        });
+      }
+      this.#controllerSessions.add(activation.childId);
+      this.#nativeActivations.set(activation.childId, activation);
+      return { sessionId: activation.childId };
+    }
     const controller = this.#sessionController;
     if (controller !== undefined) {
       // SessionController-owned member sessions survive a restart without
@@ -364,6 +433,13 @@ export class DshSessionHost implements SessionHost {
    * @param sessionId - session id.
    */
   async disposeRoot(sessionId: string): Promise<void> {
+    const native = this.#nativeActivations.get(sessionId);
+    if (native !== undefined) {
+      this.#nativeActivations.delete(sessionId);
+      this.#controllerSessions.delete(sessionId);
+      try { await native.dispose(); } catch { /* durable Session remains */ }
+      return;
+    }
     if (this.#controllerSessions.delete(sessionId)) {
       // Stop the live Agent but retain the durable Session and its history.
       const resumedHandle = this.#handles.get(sessionId);

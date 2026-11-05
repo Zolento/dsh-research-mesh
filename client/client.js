@@ -110,6 +110,16 @@ window.__ModuleLoader__.load({
         resumeProject: '恢复项目',
         pausedNotice: '项目已暂停：不再调度新任务；已运行的 Job 不受影响。',
         sessionUnavailable: '需要恢复',
+        pauseGroup: '暂停群组',
+        resumeGroup: '恢复群组',
+        stopGroup: '停止群组',
+        destroyGroup: '销毁群组',
+        groupStoppedNotice: '群组已停止：不再调度新任务；未开始的排队任务已取消，运行中的 Job 不受影响。',
+        groupPausedNotice: '群组已暂停：不再调度新任务。',
+        groupDestroyConfirm: '销毁群组只会移除 Mesh 管理状态并保留 worktree。确认销毁？',
+        groupCreate: '新建群组',
+        groupNamePrompt: '群组名称（例如 group-c）',
+        groupRoutePrompt: '科研路线 ID（例如 C）',
         session: '会话',
         agentRunning: '运行中',
         agentIdle: '空闲',
@@ -207,6 +217,16 @@ window.__ModuleLoader__.load({
         resumeProject: 'Resume project',
         pausedNotice: 'Project paused: no new tasks are scheduled; running jobs are unaffected.',
         sessionUnavailable: 'needs recovery',
+        pauseGroup: 'Pause group',
+        resumeGroup: 'Resume group',
+        stopGroup: 'Stop group',
+        destroyGroup: 'Destroy group',
+        groupStoppedNotice: 'Group stopped: no new tasks are scheduled; queued tasks are cancelled and running jobs continue.',
+        groupPausedNotice: 'Group paused: no new tasks are scheduled.',
+        groupDestroyConfirm: 'Destroy removes Mesh management state and keeps the worktree. Continue?',
+        groupCreate: 'New group',
+        groupNamePrompt: 'Group name (for example group-c)',
+        groupRoutePrompt: 'Research route id (for example C)',
         session: 'Session',
         agentRunning: 'running',
         agentIdle: 'idle',
@@ -549,7 +569,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'mesh-list' }, ...actions)))
     }
 
-    function GroupsSection({ ctx, t, data, expanded, toggle, openSession }) {
+    function GroupsSection({ ctx, t, data, expanded, toggle, openSession, onGroupState, onCreate }) {
       const modelFor = (group, sessionId) => group.agentModels.find(model => model.sessionId === sessionId)
       const groupCard = group => {
         const isOpen = expanded[group.team.teamId] === true
@@ -593,12 +613,26 @@ window.__ModuleLoader__.load({
                 h('span', null, `${t('route')}: ${group.team.researchRouteId}`),
                 h('span', null, `${t('worktree')}: ${group.workspace?.branch ?? t('worktreeMissing')}`),
                 h('span', null, `${t('currentTask')}: ${currentTask?.title ?? '—'}`))),
-            h('button', { className: 'mesh-btn', onClick: () => toggle(group.team.teamId), 'aria-expanded': isOpen }, isOpen ? '收起' : '展开')),
+            h('div', { className: 'mesh-actions' },
+              group.team.status === 'active'
+                ? h('button', { className: 'mesh-btn ghost', onClick: () => onGroupState(group.team.teamId, 'pause') }, t('pauseGroup'))
+                : group.team.status === 'paused' || group.team.status === 'stopped'
+                  ? h('button', { className: 'mesh-btn ghost', onClick: () => onGroupState(group.team.teamId, 'resume') }, t('resumeGroup'))
+                  : null,
+              group.team.status === 'active' || group.team.status === 'paused'
+                ? h('button', { className: 'mesh-btn ghost', onClick: () => onGroupState(group.team.teamId, 'stop') }, t('stopGroup'))
+                : null,
+              group.team.status === 'destroyed'
+                ? null
+                : h('button', { className: 'mesh-btn ghost', onClick: () => onGroupState(group.team.teamId, 'destroy') }, t('destroyGroup')),
+              h('button', { className: 'mesh-btn', onClick: () => toggle(group.team.teamId), 'aria-expanded': isOpen }, isOpen ? '收起' : '展开'))),
           body)
       }
       return h(Section, {
         title: t('groups'),
-        aside: h('span', { className: 'mesh-muted' }, `${data.groups.length}/3`),
+        aside: h('div', { className: 'mesh-actions' },
+          h('span', { className: 'mesh-muted' }, `${data.groups.length}/3`),
+          h('button', { className: 'mesh-btn primary', onClick: onCreate }, t('groupCreate'))),
       },
       data.groups.length === 0
         ? h('div', { className: 'mesh-empty' }, 'No research groups yet.')
@@ -715,6 +749,32 @@ window.__ModuleLoader__.load({
           .catch(error => setNotice({ kind: 'error', text: error.message }))
           .finally(() => setBusy(null))
       }
+      const groupState = (teamId, action) => {
+        if (action === 'destroy' && !window.confirm(t('groupDestroyConfirm'))) return
+        setBusy('group')
+        setNotice(null)
+        api('/groups/state', { method: 'POST', body: JSON.stringify({ teamId, action, confirm: action === 'destroy' }) })
+          .then(() => {
+            if (action === 'stop') setNotice({ kind: 'ok', text: t('groupStoppedNotice') })
+            else if (action === 'pause') setNotice({ kind: 'ok', text: t('groupPausedNotice') })
+            else setNotice(null)
+            state.reload()
+          })
+          .catch(error => setNotice({ kind: 'error', text: error.message }))
+          .finally(() => setBusy(null))
+      }
+      const createGroup = () => {
+        const name = window.prompt(t('groupNamePrompt'))
+        if (name === null || name.trim() === '') return
+        const routeId = window.prompt(t('groupRoutePrompt'))
+        if (routeId === null || routeId.trim() === '') return
+        setBusy('group')
+        setNotice(null)
+        api('/groups', { method: 'POST', body: JSON.stringify({ projectId, name: name.trim(), routeId: routeId.trim() }) })
+          .then(() => state.reload())
+          .catch(error => setNotice({ kind: 'error', text: error.message }))
+          .finally(() => setBusy(null))
+      }
       const setProjectStatus = status => {
         setBusy('project')
         setNotice(null)
@@ -744,7 +804,7 @@ window.__ModuleLoader__.load({
           h('input', { className: 'mesh-input', style: { maxWidth: '320px' }, placeholder: t('attachHint'), value: attach, onChange: event => setAttach(event.target.value), 'aria-label': t('attachHint') }),
           h('button', { className: 'mesh-btn', onClick: attachSession, disabled: busy !== null || attach.trim() === '' }, t('attachAction'))),
         h(RsiSection, { data, t }),
-        h(GroupsSection, { ctx, t, data, expanded, toggle, openSession }),
+        h(GroupsSection, { ctx, t, data, expanded, toggle, openSession, onGroupState: groupState, onCreate: createGroup }),
         h(ExecutionSection, { data, t }),
         h(ActivitySection, { data, t }))
     }

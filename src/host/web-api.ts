@@ -218,6 +218,31 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: team });
         return;
       }
+      if (path === '/groups/state' && method === 'POST') {
+        const body = await readJson(req);
+        const teamId = stringField(body, 'teamId');
+        const action = stringField(body, 'action');
+        if (action === 'pause') {
+          send(res, 200, { ok: true, value: { team: service.pauseTeam(teamId) } });
+          return;
+        }
+        if (action === 'resume') {
+          send(res, 200, { ok: true, value: { team: service.resumeTeam(teamId) } });
+          return;
+        }
+        if (action === 'stop') {
+          send(res, 200, { ok: true, value: service.stopTeam(teamId) });
+          return;
+        }
+        if (action === 'destroy') {
+          if (body.confirm !== true) {
+            throw new MeshError('INVALID_ARGUMENT', 'group destruction requires explicit confirmation');
+          }
+          send(res, 200, { ok: true, value: { team: await service.destroyTeam(teamId) } });
+          return;
+        }
+        throw new MeshError('INVALID_ARGUMENT', 'group action must be pause, resume, stop or destroy');
+      }
       if (path === '/subagents' && method === 'POST') {
         const body = await readJson(req);
         const teamId = stringField(body, 'teamId');

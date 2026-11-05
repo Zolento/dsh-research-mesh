@@ -52,6 +52,7 @@ export interface MeshHostServices {
   readonly sessionController?: DshHostContext['sessionController'];
   readonly workspaceController?: DshHostContext['workspaceController'];
   readonly llm?: DshLlmLike;
+  readonly subagents?: DshHostContext['subagents'];
 }
 
 /** Constructor options; tests inject deterministic seams here. */
@@ -125,6 +126,7 @@ export class MeshService {
   #llm: DshLlmLike | undefined;
   #sessionController: DshHostContext['sessionController'];
   #workspaceController: DshHostContext['workspaceController'];
+  #subagents: DshHostContext['subagents'];
   #workerId: string | null = null;
   #transportKind = 'none';
   #closing = false;
@@ -140,6 +142,7 @@ export class MeshService {
     this.#llm = this.#host.llm;
     this.#sessionController = this.#host.sessionController;
     this.#workspaceController = this.#host.workspaceController;
+    this.#subagents = this.#host.subagents;
     this.#sessionHostOverride = options.sessionHost;
     this.#catalogOverride = options.modelCatalog;
     this.#settingsOverride = options.modelSettings;
@@ -279,6 +282,13 @@ export class MeshService {
   }
 
   /** Late-bind the Host LLM catalog when it activates after the plugin. */
+  /** Late-bind the Host SubagentRuntime when it activates after the plugin. */
+  attachSubagents(subagents: import('./teams/session-host.ts').DshSubagentRuntimeLike): void {
+    this.#subagents = subagents;
+    const host = this.#teams?.sessionHost;
+    if (host instanceof DshSessionHost) host.attachSubagents(subagents);
+  }
+
   attachLlm(llm: DshLlmLike): void {
     this.#llm = llm;
     this.#models?.replaceCatalog(new DshModelCatalog(llm));
@@ -770,6 +780,29 @@ export class MeshService {
     return this.#requireTeams().resume(teamId);
   }
 
+  /**
+   * Stop a group: park claims, cancel tasks that have not started, and retain
+   * running tasks/jobs. Distinct from pause, which leaves queued work intact.
+   * @param teamId - group identity.
+   * @returns updated group and cancelled task ids.
+   */
+  stopTeam(teamId: string): { team: TeamView; cancelled: readonly string[] } {
+    const team = this.#requireTeams().stop(teamId);
+    const cancelled: string[] = [];
+    for (const task of this.#requireScheduler().listByTeam(teamId)) {
+      if (task.status === 'PENDING' || task.status === 'READY') {
+        try {
+          this.#requireScheduler().cancel(task.taskId, 'group stopped by operator');
+          cancelled.push(task.taskId);
+        } catch {
+          // A concurrent claim moved it to RUNNING; leaving it alone is the
+          // documented stop semantics.
+        }
+      }
+    }
+    return { team, cancelled };
+  }
+
   async destroyTeam(teamId: string): Promise<TeamView> {
     const team = this.#requireTeams().get(teamId);
     const destroyed = await this.#requireTeams().destroy(teamId);
@@ -1113,6 +1146,8 @@ export class MeshService {
       agents: this.#agents,
       ...(this.#sessionController === undefined ? {} : { sessionController: this.#sessionController }),
       ...(this.#workspaceController === undefined ? {} : { workspaceController: this.#workspaceController }),
+      ...(this.#subagents === undefined ? {} : { subagents: this.#subagents }),
+      nativeMembers: this.#config.nativeMembers,
     });
   }
 

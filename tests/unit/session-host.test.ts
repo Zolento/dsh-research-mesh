@@ -99,3 +99,60 @@ test('late Attached AgentRegistry is used when the host activates it after the p
   assert.ok(child.sessionId.startsWith('mesh-worker-1-'));
   assert.equal(created.length, 1);
 });
+
+test('native member mode uses SubagentRuntime.spawn and returns the real child session', async () => {
+  const calls: unknown[] = [];
+  const host = new DshSessionHost({
+    nativeMembers: true,
+    agents: {
+      async create() { throw new Error('controller/agent fallback must not run'); },
+      async resume() { throw new Error('not used'); },
+      get(id: string) { return { id }; },
+    },
+    subagents: {
+      async startActivation(spec) {
+        calls.push(spec);
+        return {
+          childId: 'session-native-child',
+          result: Promise.resolve({ stopReason: 'completed' }),
+          dispose: async () => {},
+        };
+      },
+    },
+  });
+  const child = await host.createSubagent({
+    teamId: 'team-1', rootSessionId: 'session-captain', name: 'worker-1', role: 'experiment',
+    cwd: '/tmp/group-a-worktree', provider: 'deepseek-pool', model: 'deepseek-flash',
+  });
+  assert.equal(child.sessionId, 'session-native-child');
+  assert.equal(calls.length, 1);
+  const spec = calls[0] as {
+    provider: string;
+    delivery: string;
+    request: { parent: { id: string }; cwd: string; agentOptions: { provider: string; model: string } };
+  };
+  assert.equal(spec.provider, 'spawn');
+  assert.equal(spec.delivery, 'caller');
+  assert.equal(spec.request.parent.id, 'session-captain');
+  assert.equal(spec.request.cwd, '/tmp/group-a-worktree');
+  assert.deepEqual(spec.request.agentOptions, { provider: 'deepseek-pool', model: 'deepseek-flash' });
+});
+
+test('a native member activation that does not complete is rejected', async () => {
+  const host = new DshSessionHost({
+    nativeMembers: true,
+    agents: { async create() { throw new Error('not used'); }, async resume() { throw new Error('not used'); }, get(id: string) { return { id }; } },
+    subagents: {
+      async startActivation() {
+        return { childId: 'session-native-bad', result: Promise.resolve({ stopReason: 'error' }), dispose: async () => {} };
+      },
+    },
+  });
+  await assert.rejects(
+    () => host.createSubagent({
+      teamId: 'team-1', rootSessionId: 'session-captain', name: 'worker-1', role: 'experiment',
+      cwd: '/tmp/group-a-worktree', provider: 'deepseek-pool', model: 'deepseek-flash',
+    }),
+    /did not complete/,
+  );
+});

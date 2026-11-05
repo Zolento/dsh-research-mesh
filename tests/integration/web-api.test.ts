@@ -55,6 +55,22 @@ test('bootstrap, project creation, workbench and same-origin mutation protection
     });
     assert.equal(unknownGroup.status, 404);
     const team = await service.createTeam({ projectId: created.value.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    for (const [action, status] of [['pause', 'paused'], ['stop', 'stopped'], ['resume', 'active']] as const) {
+      const response = await fetch(`${base}/dsh-research-mesh/api/groups/state`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ teamId: team.teamId, action }),
+      });
+      const payload = await response.json() as { ok: boolean; value: { team: { status: string } } };
+      assert.equal(response.status, 200);
+      assert.equal(payload.value.team.status, status);
+    }
+    const destroyNoConfirm = await fetch(`${base}/dsh-research-mesh/api/groups/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ teamId: team.teamId, action: 'destroy' }),
+    });
+    assert.equal(destroyNoConfirm.status, 400);
     const workbenchResponse = await (await fetch(`${base}/dsh-research-mesh/api/workbench?projectId=${created.value.projectId}`)).json() as { ok: boolean; value: { project: { name: string }; groups: unknown[]; rsi: { available: boolean } } };
     assert.equal(workbenchResponse.ok, true);
     assert.equal(workbenchResponse.value.project.name, 'Web API project');

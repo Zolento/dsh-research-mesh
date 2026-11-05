@@ -21,16 +21,17 @@ Commit: `0a69688` (rc1 adaptation); prior audit commits `35ca703`, `9a7c757`, `4
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit | 74 | pass |
+| Unit | 78 | pass |
 | Integration | 8 | pass |
 | End-to-end + fault injection | 4 | pass |
-| **Total** | **86** | **pass, 0 fail, 0 skip** |
+| **Total** | **90** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |
 
 DSH rc1 adaptation: [DSH-0.2.2-rc1.md](DSH-0.2.2-rc1.md).
 Live local GPU scenario: [LIVE-GPU-SCENARIO.md](LIVE-GPU-SCENARIO.md).
+Live SSH + native-member scenario: [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).
 
 Group-control audit (destroyed-group quota, project pause drift, Captain rollback,
 member binding ownership, GPU double-lease, artifact ingestion, remote retry):

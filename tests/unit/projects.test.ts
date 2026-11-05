@@ -376,6 +376,36 @@ test('member identity is bound to its group and project', async () => {
   }
 });
 
+test('stopping a group cancels queued tasks and is distinct from pause', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    const team = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    const task = service.submitTask({
+      projectId: created.projectId, teamId: team.teamId, type: 'local', title: 'queued',
+      payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+    }).task;
+    const stopped = service.stopTeam(team.teamId);
+    assert.equal(stopped.team.status, 'stopped');
+    assert.deepEqual(stopped.cancelled, [task.taskId]);
+    assert.equal(service.getTask(task.taskId).status, 'CANCELLED');
+    assert.equal(service.claimNext(), undefined);
+    // A stopped group remains distinct from a paused group and can resume.
+    assert.notEqual(service.getTeam(team.teamId).status, 'paused');
+    service.resumeTeam(team.teamId);
+    assert.equal(service.getTeam(team.teamId).status, 'active');
+    const next = service.submitTask({
+      projectId: created.projectId, teamId: team.teamId, type: 'local', title: 'after-resume',
+      payload: { entrypoint: 'python3', argv: ['-c', 'print(1)'] },
+    }).task;
+    assert.equal(next.status, 'READY');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
 test('a disposed control session detaches its binding but a group session does not', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project);

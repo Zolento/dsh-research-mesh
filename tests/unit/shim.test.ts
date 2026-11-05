@@ -147,3 +147,21 @@ test('the shim rejects an unsupported spec and an out-of-range exit code', () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('consume-only mode exits zero without waiting for a result', () => {
+  const { root, paths } = fixture();
+  try {
+    prepareShim(paths, {
+      schema: SHIM_SPEC_SCHEMA,
+      job_id: 'job-shim',
+      attempt_id: 'attempt-shim',
+      timeout_seconds: 30,
+      poll_ms: 20,
+      mode: 'exit',
+    });
+    const output = execFileSync('python3', [paths.scriptPath, paths.specPath], { encoding: 'utf8' });
+    assert.match(output, /delegated to the controller/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

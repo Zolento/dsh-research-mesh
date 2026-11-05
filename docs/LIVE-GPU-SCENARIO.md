@@ -137,6 +137,11 @@ session log (`assistant/message` with source
 `model=deepseek-pool/deepseek-flash`). The report should not rely on that boolean
 alone.
 
+## Follow-up: real SSH and native members
+
+See [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md) for a real localhost SSH run and
+native SubagentRuntime member parentage. The SSH GPU probe was fixed there.
+
 ## Risks / boundaries observed
 
 1. **This is a test-stub/preview execution, not a consumed RSI run.** The task

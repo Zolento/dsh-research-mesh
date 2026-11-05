@@ -322,6 +322,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
   };
 
   const allowFakeTransport = booleanField(input.allowFakeTransport, 'allowFakeTransport', false);
+  const nativeMembers = booleanField(input.nativeMembers, 'nativeMembers', false);
   const workers = resolveWorkers(input.workers, conda, ssh, allowFakeTransport);
 
   const rsiRaw = optionalObject(input.rsi, 'rsi') ?? {};
@@ -381,6 +382,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     worktreesDir,
     databasePath,
     modelSettingsPath,
+    nativeMembers,
     sessionBinding,
     ...(agent === undefined ? {} : { agent }),
     limits,

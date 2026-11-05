@@ -59,6 +59,12 @@ export interface ShimSpec {
   readonly attempt_id: string;
   readonly timeout_seconds: number;
   readonly poll_ms: number;
+  /**
+   * `wait` (default) blocks for the Mesh result. `exit` consumes the receipt
+   * and returns immediately; the operator then submits the Mesh task, whose
+   * `executionManifestPath` carries the real wrapper.
+   */
+  readonly mode?: 'wait' | 'exit';
 }
 
 /**
@@ -167,6 +173,14 @@ def main() -> int:
         spec = json.load(handle)
     if spec.get("schema") != ${JSON.stringify(SHIM_SPEC_SCHEMA)}:
         sys.stderr.write("unsupported shim spec schema\\n")
+        return 2
+    if spec.get("mode") == "exit":
+        # RSI appended the consume event before this process starts. The Mesh
+        # verifies that event and launches the real execution manifest.
+        sys.stdout.write("mesh receipt consumed; execution is delegated to the controller\\n")
+        return 0
+    if spec.get("mode") not in (None, "wait"):
+        sys.stderr.write("unsupported shim mode\\n")
         return 2
     # The result lives beside the spec: the RSI manifest only binds this one path.
     result_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), ${JSON.stringify(SHIM_RESULT_FILE)})

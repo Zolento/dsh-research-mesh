@@ -15,6 +15,7 @@ worktrees, tasks, remote jobs and the control surface.
 - Current status and limits: [`docs/STATUS.md`](docs/STATUS.md)
 - DSH 0.2.2-rc.1 adaptation: [`docs/DSH-0.2.2-rc1.md`](docs/DSH-0.2.2-rc1.md)
 - Live local GPU scenario (2 groups × 2 subagents): [`docs/LIVE-GPU-SCENARIO.md`](docs/LIVE-GPU-SCENARIO.md)
+- Live SSH + native-member scenario: [`docs/LIVE-SSH-NATIVE.md`](docs/LIVE-SSH-NATIVE.md)
 
 ## What is implemented
 

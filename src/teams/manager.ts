@@ -39,7 +39,7 @@ export const WORKER_ROLES: readonly ResearchRole[] = [
 ];
 
 /** Mesh-facing group state. */
-export type TeamStatus = 'active' | 'paused' | 'destroyed';
+export type TeamStatus = 'active' | 'paused' | 'stopped' | 'destroyed';
 
 /** One group as exposed by the Mesh API. */
 export interface TeamView {
@@ -104,13 +104,13 @@ const DEFAULT_BUDGET: Budget = {
 function mapTeamStatus(status: TeamRecord['status']): TeamStatus {
   if (status === 'active') return 'active';
   if (status === 'paused') return 'paused';
-  return 'destroyed';
+  return 'paused';
 }
 
 function reverseStatus(status: TeamStatus): TeamRecord['status'] {
   if (status === 'active') return 'active';
   if (status === 'paused') return 'paused';
-  return 'stopped';
+  return 'paused';
 }
 
 /** Team and quota registry over the integrated bridge store. */
@@ -357,6 +357,17 @@ export class TeamManager {
    */
   resume(teamId: string): TeamView {
     return this.#transition(teamId, 'active');
+  }
+
+  /**
+   * Stop a group without destroying it: no new tasks may be claimed, and the
+   * group is visibly distinct from a merely paused group. Running tasks are
+   * left to finish; callers cancel queued work explicitly.
+   * @param teamId - group identity.
+   * @returns updated group.
+   */
+  stop(teamId: string): TeamView {
+    return this.#transition(teamId, 'stopped');
   }
 
   /**
@@ -719,13 +730,15 @@ export class TeamManager {
 
   #transition(teamId: string, next: TeamStatus): TeamView {
     const team = this.#requireTeam(teamId);
-    const current = mapTeamStatus(team.status);
-    if (current === 'destroyed') {
-      throw new MeshError('TEAM_STATE_INVALID', 'a destroyed group cannot be resumed', { teamId, status: current });
+    const group = this.#store.getGroup(teamId);
+    if (group === undefined) throw this.#notFound(teamId);
+    if (group.status === 'destroyed') {
+      throw new MeshError('TEAM_STATE_INVALID', 'a destroyed group cannot change state', { teamId, status: group.status });
     }
+    const current: TeamStatus = group.status === 'stopped' ? 'stopped' : group.status === 'paused' ? 'paused' : 'active';
     if (current === next) return this.#view(teamId);
     const now = nowIso();
-    const groupStatus: MeshGroupStatus = next === 'active' ? 'active' : 'paused';
+    const groupStatus: MeshGroupStatus = next === 'active' ? 'active' : next === 'stopped' ? 'stopped' : 'paused';
     this.#store.transaction(() => {
       this.#store.teamStore.upsertTeam({
         ...team,
@@ -734,7 +747,7 @@ export class TeamManager {
         revision: team.revision + 1,
       });
       this.#store.updateGroup(teamId, { status: groupStatus, updatedAt: now });
-      this.#store.appendEvent('team', teamId, next === 'active' ? 'resumed' : 'paused', {});
+      this.#store.appendEvent('team', teamId, next === 'active' ? 'resumed' : next === 'stopped' ? 'stopped' : 'paused', {});
     });
     return this.#view(teamId);
   }
@@ -755,7 +768,11 @@ export class TeamManager {
       teamId,
       name: team.title,
       objective: team.objective,
-      status: mapTeamStatus(team.status),
+      status: group.status === 'destroyed'
+        ? 'destroyed'
+        : group.status === 'stopped'
+          ? 'stopped'
+          : mapTeamStatus(team.status),
       rootSessionId: team.captainAgentId,
       subagentSessionIds: subagents,
       workspaceId: group.workspaceId,

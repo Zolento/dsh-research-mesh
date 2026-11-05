@@ -1,7 +1,7 @@
 /** Durable Mesh metadata types stored beside the integrated bridge domain. */
 
 /** Research-group lifecycle in the Mesh registry. */
-export type MeshGroupStatus = 'active' | 'paused' | 'destroyed';
+export type MeshGroupStatus = 'active' | 'paused' | 'stopped' | 'destroyed';
 
 /** One group registry row. */
 export interface MeshGroupRecord {

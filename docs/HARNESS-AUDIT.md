@@ -197,24 +197,37 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
   detaches `control` bindings only, ignores shutdown disposal, and never touches
   captain/member bindings. Covered by `tests/unit/projects.test.ts`.
 - **consumed-ledger** — the blocking-shim rendezvous (`src/rsi/blocking-shim.ts`)
-  is implemented and tested: the Mesh publishes the job outcome and the shim
-  mirrors its exit code, so RSI's `run --execute` can consume exactly once while
-  the Mesh remains the only launcher. Wiring it into `MeshWorker` as an opt-in
-  authorization mode is the next step.
+  is implemented and tested: wait mode mirrors the Mesh exit code, consume-only
+  mode lets RSI consume once before Mesh launches, and the worker accepts a
+  separate shim authorization manifest plus the real execution manifest.
+  A single coordinator for the complete consumed run is still open.
+- **Real SSH / conda / GPU** — validated against localhost OpenSSH with a
+  temporary key: job staging, wrapper, real conda `torch`, RTX 4060 Ti,
+  `SshGpuProbe`, artifact download and ingestion all passed. The probe originally
+  treated 893 MiB desktop VRAM as busy; it now uses the 90% occupancy rule.
+- **Native members** — `nativeMembers: true` creates members through
+  `SubagentRuntime.spawn`; raw session headers show `origin: subagent`,
+  `parentSession` and `delegationDepth: 1`. The child's first activation settles,
+  so follow-up must use the native continuation API rather than
+  `sessionController.prompt`.
+- **Group controls** — Workbench has Pause/Resume/Stop/Destroy/New group. Stop is
+  persisted as a distinct state, cancels only `PENDING`/`READY` tasks and leaves
+  running jobs alone.
 
 ## Remaining limitations (not papered over)
 
-- Member sessions are controller-backed DSH sessions grouped by Mesh; they are
-  not native `SubagentRuntime` continuable children, so DSH Agent Team roster
-  parentage is not the authority yet.
-- Real SSH/Conda/GPU execution remains unexercised.
+- Native member creation is opt-in (`nativeMembers`); the default remains
+  controller-backed for restart survival and Web navigation. Native children
+  need a follow-up activation API after their first turn.
+- A full consumed-ledger coordinator (RSI consumes, Mesh verifies and launches,
+  crash between consume and launch is reconciled without a rerun) is not wired.
 - A group whose worktree was retained after destruction blocks reuse of the same
   group name/branch until workspace cleanup is explicitly performed.
 
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 77 tests, 0 failures.
+- `npm run test:all` — 90 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
-- No push, deployment, real SSH, real GPU, or upstream modification.
+- No push/deployment or upstream modification. Real localhost SSH and local GPU were exercised in [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).

@@ -126,6 +126,8 @@ export interface MeshConfig {
   readonly artifacts: ArtifactConfig;
   /** Test-only fake transport gate. */
   readonly allowFakeTransport: boolean;
+  /** Create members as native DSH SubagentRuntime continuable children. */
+  readonly nativeMembers: boolean;
   /** Start the scheduler loop automatically on plugin load. */
   readonly autoStartScheduler: boolean;
   /** Run crash recovery when the service starts. */

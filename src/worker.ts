@@ -39,7 +39,10 @@ export interface ExperimentTaskPayload {
     readonly experimentId: string;
     readonly routeId: string;
     readonly statePath: string;
+    /** Manifest the RSI receipt is bound to (the shim manifest in consumed mode). */
     readonly manifestPath: string;
+    /** Real Mesh execution manifest when it differs from the authorization manifest. */
+    readonly executionManifestPath?: string;
     readonly schedulerPath: string;
     readonly receiptPath: string;
     readonly ledgerPath?: string;
@@ -267,6 +270,10 @@ export class MeshWorker {
         taskId: task.taskId,
       });
     }
+    // In consumed mode the receipt may be bound to a shim manifest that only
+    // consumes the ledger entry; the real wrapper comes from a separate
+    // execution manifest.
+    const executionManifestPath = rsi.executionManifestPath ?? rsi.manifestPath;
     const input = {
       projectId: task.projectId,
       routeId: rsi.routeId,
@@ -284,7 +291,7 @@ export class MeshWorker {
       taskId: task.taskId,
       workerId: payload.workerId,
       gpuId: payload.gpuId,
-      rsiManifestPath: rsi.manifestPath,
+      rsiManifestPath: executionManifestPath,
       authorization,
       ...(payload.condaEnvironment === undefined ? {} : { condaEnvironment: payload.condaEnvironment }),
       ...(payload.artifactDestination === undefined ? {} : { artifactDestination: payload.artifactDestination }),

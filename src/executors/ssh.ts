@@ -176,7 +176,7 @@ export class SshTransport implements JobTransport {
    * @returns availability.
    */
   async probeGpu(worker: WorkerConfig, gpuId: number): Promise<GpuAvailability> {
-    const command = `nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits`;
+    const command = `nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits`;
     const result = await runProcess({
       command: 'ssh',
       args: [...this.#sshOptions(worker), `${worker.user ?? 'root'}@${this.#host(worker)}`, '--', command],
@@ -185,11 +185,15 @@ export class SshTransport implements JobTransport {
     });
     if (result.timedOut || result.code !== 0) return 'unknown';
     for (const line of result.stdout.split('\n')) {
-      const [indexRaw, usedRaw] = line.split(',').map(part => part.trim());
-      if (indexRaw === undefined || usedRaw === undefined) continue;
+      const [indexRaw, usedRaw, totalRaw] = line.split(',').map(part => part.trim());
+      if (indexRaw === undefined || usedRaw === undefined || totalRaw === undefined) continue;
       if (Number.parseInt(indexRaw, 10) !== gpuId) continue;
       const used = Number.parseInt(usedRaw, 10);
-      return Number.isSafeInteger(used) && used < 64 ? 'available' : 'busy';
+      const total = Number.parseInt(totalRaw, 10);
+      if (!Number.isSafeInteger(used) || !Number.isSafeInteger(total) || total <= 0) return 'unknown';
+      // Desktop/display memory is common; only a nearly full device is busy.
+      // Compute contention is not observable from this query; see docs.
+      return used / total >= 0.9 ? 'busy' : 'available';
     }
     return 'unknown';
   }

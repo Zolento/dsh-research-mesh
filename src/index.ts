@@ -15,7 +15,7 @@ import { FileModelSettingsStore } from './teams/settings-store.ts';
 import { ConfigModelSettingsStore, type SettingsFormsLike, type VolatileLike } from './teams/config-settings-store.ts';
 import { registerMeshApi } from './host/web-api.ts';
 import { createLogger, type MeshLogger } from './util/logger.ts';
-import type { DshAgentsLike, DshSessionControllerLike, DshWorkspaceControllerLike } from './teams/session-host.ts';
+import type { DshAgentsLike, DshSessionControllerLike, DshSubagentRuntimeLike, DshWorkspaceControllerLike } from './teams/session-host.ts';
 import type { DshLlmLike } from './dsh/model-catalog.ts';
 
 /** Cordis plugin name used in diagnostics. */
@@ -50,6 +50,13 @@ function asLlm(value: unknown): DshLlmLike | undefined {
   const candidate = value as Partial<DshLlmLike>;
   if (typeof candidate.listProviders !== 'function' || typeof candidate.listModels !== 'function') return undefined;
   return candidate as DshLlmLike;
+}
+
+function asSubagents(value: unknown): DshSubagentRuntimeLike | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<DshSubagentRuntimeLike>;
+  if (typeof candidate.startActivation !== 'function') return undefined;
+  return candidate as DshSubagentRuntimeLike;
 }
 
 function asWorkspaceController(value: unknown): DshWorkspaceControllerLike | undefined {
@@ -119,6 +126,7 @@ export async function apply(ctx: MeshPluginContext, rawConfig?: unknown): Promis
       ...(asLlm(ctx.get('llm')) === undefined ? {} : { llm: asLlm(ctx.get('llm')) }),
       ...(asSessionController(ctx.get('sessionController')) === undefined ? {} : { sessionController: asSessionController(ctx.get('sessionController')) }),
       ...(asWorkspaceController(ctx.get('workspaceController')) === undefined ? {} : { workspaceController: asWorkspaceController(ctx.get('workspaceController')) }),
+      ...(asSubagents(ctx.get('subagents')) === undefined ? {} : { subagents: asSubagents(ctx.get('subagents')) }),
     },
   });
   await service.init();
@@ -138,6 +146,10 @@ export async function apply(ctx: MeshPluginContext, rawConfig?: unknown): Promis
     workspaceController: asWorkspaceController(ctx.get('workspaceController')) !== undefined,
     llm: asLlm(ctx.get('llm')) !== undefined,
     settings: settings !== undefined,
+  });
+  ctx.inject(['subagents'], child => {
+    const subagents = asSubagents(child.get('subagents'));
+    if (subagents !== undefined) service.attachSubagents(subagents);
   });
   ctx.inject(['agents'], child => {
     logger.debug('late host binding', { service: 'agents', available: asAgents(child.get('agents')) !== undefined });
