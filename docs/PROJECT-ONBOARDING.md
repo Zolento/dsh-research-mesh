@@ -6,7 +6,9 @@ checkout can be the project root itself.
 ## UI flow
 
 1. Open **Research Mesh → 关联研究项目**.
-2. Click **选择文件夹** and pick the repository root (or type an absolute path).
+2. Click **选择文件夹**. The in-page dialog mirrors the Workspace add dialog
+   (host directory listing, New folder, hidden-file toggle, Open/Cancel); pick
+   the repository root.
 3. The plugin calls `POST /projects/inspect` and:
    - verifies the path is a Git checkout;
    - discovers `.research-idea-pipeline/routes/*/research-state.json`;

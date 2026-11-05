@@ -195,7 +195,7 @@ export async function runConsumedShim(
   writeJournal(spec.journalPath, { phase: 'completed', receiptId, experimentId: spec.experimentId, exitCode });
   const rsiExit = await waitForExit(exited, 30_000);
   if (rsiExit !== 0) {
-    throw new MeshError('RSI_RUN_FAILED', 'RSI run --execute did not accept the completed shim', {
+    throw new MeshError('RSI_RUN_FAILED', `RSI run --execute did not accept the completed shim (exit ${rsiExit}): ${stderr.slice(0, 800)}`, {
       exitCode: rsiExit,
       stdout: stdout.slice(0, 4000),
       stderr: stderr.slice(0, 4000),
@@ -226,8 +226,14 @@ function delay(ms: number): Promise<void> {
 }
 
 async function waitForExit(promise: Promise<number>, timeoutMs: number): Promise<number> {
-  return Promise.race([
-    promise,
-    delay(timeoutMs).then(() => { throw new MeshError('RSI_RUN_TIMEOUT', 'RSI run did not exit after the shim result'); }),
-  ]);
+  return await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new MeshError('RSI_RUN_TIMEOUT', 'RSI run did not exit after the shim result'));
+    }, timeoutMs);
+    timer.unref?.();
+    promise.then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
 }

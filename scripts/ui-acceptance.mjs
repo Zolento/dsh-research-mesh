@@ -284,8 +284,8 @@ async function main() {
     await waitFor(async () => evaluate('document.body.innerText.includes("已检测") || document.body.innerText.includes("没有 RSI")'), 'repository inspection');
     // The native picker is absent in the Web build; the composed browser must open.
     await clickText('选择文件夹');
-    await waitFor(async () => evaluate('document.querySelector(".mesh-browser") !== null'), 'composed directory browser');
-    await clickText('取消');
+    await waitFor(async () => evaluate('document.querySelector(".mesh-browser-dialog") !== null'), 'in-page directory dialog');
+    await evaluate(`(() => { const dialog = document.querySelector('.mesh-browser-dialog'); const button = Array.from(dialog.querySelectorAll('button')).find(node => /取消/.test(node.innerText)); button.click(); return true; })()`);
 
     // Workbench.
     await click('.mesh-project');

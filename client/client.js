@@ -47,7 +47,12 @@ window.__ModuleLoader__.load({
         picking: '选择中…',
         inspect: '检测',
         pickerUnavailable: '当前 Web GUI 不提供目录浏览器，请直接输入绝对路径。',
-        browseTitle: '选择 Git 仓库目录',
+        browseTitle: '选择工作区目录',
+        homeDirectory: '主目录',
+        openFolder: '打开',
+        newFolder: '新建文件夹',
+        newFolderPrompt: '文件夹名称',
+        showHidden: '显示隐藏文件',
         up: '上级',
         chooseCurrent: '选择当前目录',
         browserLoading: '正在读取目录…',
@@ -308,6 +313,27 @@ window.__ModuleLoader__.load({
       .mesh-field { display: grid; gap: 4px; font-size: 13px; }
       .mesh-path-row { display: flex; gap: 6px; align-items: stretch; }
       .mesh-path-row .mesh-input { flex: 1; min-width: 0; }
+      .mesh-browser-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.36); display: flex; align-items: center; justify-content: center; padding: 16px; }
+      .mesh-browser-dialog { width: min(680px, 100%); height: min(500px, 100dvh - 32px); background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, inherit); border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 64px rgba(0,0,0,.28); }
+      .mesh-browser-header { display: grid; gap: 8px; padding: 16px 24px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.16)); }
+      .mesh-browser-header h2 { margin: 0; font-size: 16px; font-weight: 510; }
+      .mesh-browser-crumbs { display: flex; align-items: center; gap: 4px; min-height: 24px; overflow-x: auto; }
+      .mesh-browser-crumb { border: 0; background: transparent; color: var(--dsw-alias-label-tertiary, #5b6470); font: inherit; font-size: 13px; padding: 2px 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+      .mesh-browser-crumb:hover { color: var(--dsw-alias-label-primary, inherit); }
+      .mesh-browser-content { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 12px 24px; }
+      .mesh-browser-list { display: grid; gap: 2px; }
+      .mesh-browser-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+      .mesh-browser-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+      .mesh-browser-row.selected { background: var(--dsw-alias-interactive-bg-active, rgba(59,130,246,.12)); }
+      .mesh-browser-folder { font-size: 15px; }
+      .mesh-browser-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+      .mesh-browser-chevron { color: var(--dsw-alias-label-tertiary, #5b6470); }
+      .mesh-browser-enter { visibility: hidden; font-size: 12px; color: var(--dsw-alias-brand-primary, #3b82f6); padding: 2px 4px; border-radius: 4px; }
+      .mesh-browser-row:hover .mesh-browser-enter, .mesh-browser-enter:focus-visible { visibility: visible; }
+      .mesh-browser-status { color: var(--dsw-alias-label-secondary, #5b6470); font-size: 13px; padding: 8px 4px; }
+      .mesh-browser-footer { display: flex; align-items: center; gap: 10px; padding: 12px 24px; border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.16)); flex-wrap: wrap; }
+      .mesh-browser-hidden { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dsw-alias-label-secondary, #5b6470); }
+      .mesh-browser-gap { flex: 1; }
       .mesh-browser { display: grid; gap: 8px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3)); border-radius: 10px; padding: 10px; background: var(--dsw-alias-bg-layer-2, transparent); }
       .mesh-browser-list { display: grid; gap: 4px; max-height: 240px; overflow: auto; }
       .mesh-browser-entry { text-align: left; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
@@ -479,10 +505,95 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function DirectoryBrowser({ ctx, t, startPath, onCancel, onChoose }) {
+      const [listing, setListing] = useState(null)
+      const [path, setPath] = useState(startPath ?? null)
+      const [selected, setSelected] = useState(null)
+      const [showHidden, setShowHidden] = useState(false)
+      const [loading, setLoading] = useState(true)
+      const [error, setError] = useState(null)
+      const load = async target => {
+        if (typeof ctx.uiWorkspace?.listDirectory !== 'function') {
+          setError(t('pickerUnavailable'))
+          setLoading(false)
+          return
+        }
+        setLoading(true)
+        setError(null)
+        try {
+          const result = await ctx.uiWorkspace.listDirectory(target)
+          setListing(result)
+          setPath(result.path)
+          setSelected(null)
+        } catch (failure) {
+          setError(String(failure?.message ?? failure))
+        } finally {
+          setLoading(false)
+        }
+      }
+      useEffect(() => { void load(startPath) }, [])
+      const crumbs = listing?.crumbs ?? []
+      const entries = (listing?.entries ?? []).filter(entry => showHidden || entry.hidden !== true)
+      const enter = entry => {
+        setSelected(entry.path)
+        void load(entry.path)
+      }
+      const createFolder = async () => {
+        const name = window.prompt(t('newFolderPrompt'))
+        if (name === null || name.trim() === '') return
+        try {
+          await ctx.uiWorkspace.createDirectory(path, name.trim())
+          await load(path)
+        } catch (failure) {
+          setError(String(failure?.message ?? failure))
+        }
+      }
+      const open = () => {
+        const chosen = selected ?? path
+        if (chosen !== null) onChoose(chosen)
+      }
+      const crumbRow = h('div', { className: 'mesh-browser-crumbs' },
+        crumbs.length === 0 ? h('span', { className: 'mesh-muted' }, t('homeDirectory')) : crumbs.map((crumb, index) =>
+          h('button', {
+            key: crumb.path, type: 'button', className: 'mesh-browser-crumb',
+            onClick: () => { void load(crumb.path) },
+          }, index === 0 ? t('homeDirectory') : crumb.name)))
+      const rows = entries.map(entry => h('button', {
+        key: entry.path,
+        type: 'button',
+        className: `mesh-browser-row${selected === entry.path ? ' selected' : ''}`,
+        onClick: () => setSelected(entry.path),
+        onDoubleClick: () => enter(entry),
+      },
+      h('span', { className: 'mesh-browser-folder', 'aria-hidden': 'true' }, h('svg', { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none' }, h('path', { d: 'M1.8 3.5h4.1l1.2 1.4h7.1v7.6H1.8z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round' }))),
+      h('span', { className: 'mesh-browser-name' }, entry.name),
+      h('span', { className: 'mesh-browser-chevron', 'aria-hidden': 'true' }, '›'),
+      h('span', { role: 'button', tabIndex: 0, className: 'mesh-browser-enter', onClick: event => { event.stopPropagation(); enter(entry) }, onKeyDown: event => { if (event.key === 'Enter') { event.stopPropagation(); enter(entry) } } }, t('openFolder'))))
+      return h('div', { className: 'mesh-browser-overlay' },
+        h('div', { className: 'mesh-browser-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('browseTitle') },
+          h('div', { className: 'mesh-browser-header' },
+            h('h2', null, t('browseTitle')),
+            crumbRow),
+          h('div', { className: 'mesh-browser-content' },
+            error === null ? null : h('div', { className: 'mesh-error', role: 'alert' }, error),
+            loading ? h('div', { className: 'mesh-browser-status' }, t('browserLoading'))
+              : rows.length === 0 ? h('div', { className: 'mesh-browser-status' }, t('browserEmpty'))
+                : h('div', { className: 'mesh-browser-list' }, ...rows)),
+          h('div', { className: 'mesh-browser-footer' },
+            h('button', { className: 'mesh-btn ghost', type: 'button', onClick: createFolder }, `+ ${t('newFolder')}`),
+            h('label', { className: 'mesh-browser-hidden' },
+              h('input', { type: 'checkbox', checked: showHidden, onChange: event => setShowHidden(event.target.checked) }),
+              t('showHidden')),
+            h('div', { className: 'mesh-browser-gap' }),
+            h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel')),
+            h('button', { className: 'mesh-btn primary', type: 'button', onClick: open, disabled: loading || path === null }, t('openFolder'))))
+      )
+    }
+
     function ProjectForm({ ctx, t, onCancel, onCreated }) {
       const [form, setForm] = useState({ name: '', rsiStateRef: '', repositoryRef: '', description: '' })
       const [inspection, setInspection] = useState(null)
-      const [browser, setBrowser] = useState(null)
+      const [browserOpen, setBrowserOpen] = useState(false)
       const [busy, setBusy] = useState(false)
       const [picking, setPicking] = useState(false)
       const [error, setError] = useState(null)
@@ -509,29 +620,13 @@ window.__ModuleLoader__.load({
           setError(failure.message)
         }
       }
-      const browse = async path => {
-        if (typeof ctx.uiWorkspace?.listDirectory !== 'function') {
-          setError(t('pickerUnavailable'))
-          return
-        }
-        setBrowser(previous => ({ ...(previous ?? {}), loading: true, error: null }))
-        try {
-          const listing = await ctx.uiWorkspace.listDirectory(path)
-          setBrowser({ path: listing.path, listing, loading: false, error: null })
-        } catch (failure) {
-          setBrowser(previous => ({ ...(previous ?? { path: path ?? '' }), loading: false, error: String(failure?.message ?? failure) }))
-        }
+      const pick = () => {
+        // Use the same in-page listing primitive and visual language as the
+        // Workspace add flow. Never invoke the Host-native picker on Web.
+        setBrowserOpen(true)
       }
-      const pick = async () => {
-        // Never call the native picker here: on the Web it opens a host dialog
-        // and can hang the await. The composed listDirectory browser is the
-        // same primitive the Workspace add flow uses and always stays in-page.
-        await browse(form.repositoryRef.trim() === '' ? undefined : form.repositoryRef.trim())
-      }
-      const chooseBrowserPath = async () => {
-        if (browser?.path === undefined) return
-        const path = browser.path
-        setBrowser(null)
+      const chooseBrowserPath = async path => {
+        setBrowserOpen(false)
         set('repositoryRef', path)
         await inspectPath(path)
       }
@@ -585,60 +680,43 @@ window.__ModuleLoader__.load({
         h('div', { className: 'mesh-muted' }, inspection.runnable
           ? t('repoRunnable')
           : `${t('repoNotRunnable')} ${inspection.configuredSourceDir}`))
-      return h('div', { className: 'mesh-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('newProject') },
-        h('form', { className: 'mesh-modal-card', onSubmit: submit },
-          h('h2', { className: 'mesh-h2' }, t('newProject')),
-          h('p', { className: 'mesh-subtitle' }, t('newProjectHint')),
-          error === null ? null : h('div', { className: 'mesh-error', role: 'alert' }, error),
-          h('label', { className: 'mesh-field' }, t('repositoryRoot'),
-            h('div', { className: 'mesh-path-row' },
-              h('input', {
-                className: 'mesh-input', required: true,
-                placeholder: '/home/you/code/MyProject',
-                value: form.repositoryRef,
-                onChange: event => set('repositoryRef', event.target.value),
-                onBlur: event => { if (inspection === null) void inspectPath(event.target.value) },
-              }),
-              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: pick, disabled: picking },
-                picking ? t('picking') : t('chooseFolder')),
-              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => inspectPath(form.repositoryRef) }, t('inspect'))),
-            h('div', { className: 'mesh-muted' }, t('repositoryRootHint'))),
-          browser === null ? null : h('div', { className: 'mesh-browser' },
-            h('div', { className: 'mesh-row' },
-              h('strong', null, t('browseTitle')),
-              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => setBrowser(null) }, t('cancel'))),
-            h('div', { className: 'mesh-code' }, browser.path ?? browser.listing?.home ?? ''),
+      return h('div', null,
+        h('div', { className: 'mesh-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('newProject') },
+          h('form', { className: 'mesh-modal-card', onSubmit: submit },
+            h('h2', { className: 'mesh-h2' }, t('newProject')),
+            h('p', { className: 'mesh-subtitle' }, t('newProjectHint')),
+            error === null ? null : h('div', { className: 'mesh-error', role: 'alert' }, error),
+            h('label', { className: 'mesh-field' }, t('repositoryRoot'),
+              h('div', { className: 'mesh-path-row' },
+                h('input', {
+                  className: 'mesh-input', required: true,
+                  placeholder: '/home/you/code/MyProject',
+                  value: form.repositoryRef,
+                  onChange: event => set('repositoryRef', event.target.value),
+                  onBlur: event => { if (inspection === null) void inspectPath(event.target.value) },
+                }),
+                h('button', { className: 'mesh-btn ghost', type: 'button', onClick: pick }, t('chooseFolder')),
+                h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => inspectPath(form.repositoryRef) }, t('inspect'))),
+              h('div', { className: 'mesh-muted' }, t('repositoryRootHint'))),
+            h('label', { className: 'mesh-field' }, t('name'),
+              h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => set('name', event.target.value) })),
+            status,
+            inspection?.migrationRequired === true
+              ? h('div', { className: 'mesh-warn' },
+                h('div', null, t('migrationRequired')),
+                h('div', { className: 'mesh-muted' }, t('migrationHint')),
+                h('div', { className: 'mesh-actions' },
+                  h('button', { className: 'mesh-btn', type: 'button', onClick: copyPrompt }, copied ? t('copied') : t('copyPrompt'))))
+              : routeField,
+            h('label', { className: 'mesh-field' }, t('description'),
+              h('textarea', { className: 'mesh-input', rows: 3, value: form.description, onChange: event => set('description', event.target.value) })),
             h('div', { className: 'mesh-actions' },
-              h('button', { className: 'mesh-btn ghost', type: 'button', disabled: browser.loading || (browser.listing?.crumbs?.length ?? 0) <= 1, onClick: () => {
-                const crumbs = browser.listing?.crumbs ?? []
-                const parent = crumbs.length >= 2 ? crumbs[crumbs.length - 2]?.path : undefined
-                void browse(parent)
-              } }, t('up')),
-              h('button', { className: 'mesh-btn primary', type: 'button', disabled: browser.loading || browser.path === undefined, onClick: chooseBrowserPath }, t('chooseCurrent'))),
-            browser.error === null || browser.error === undefined ? null : h('div', { className: 'mesh-error', role: 'alert' }, browser.error),
-            browser.loading === true ? h('div', { className: 'mesh-muted' }, t('browserLoading')) : null,
-            browser.listing === undefined || browser.loading === true ? null : h('div', { className: 'mesh-browser-list' },
-              (browser.listing.entries ?? []).length === 0
-                ? h('div', { className: 'mesh-muted' }, t('browserEmpty'))
-                : browser.listing.entries.map(entry => h('button', {
-                  key: entry.path, type: 'button', className: 'mesh-browser-entry',
-                  onClick: () => { void browse(entry.path) },
-                }, `📁 ${entry.name}`)))),
-          h('label', { className: 'mesh-field' }, t('name'),
-            h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => set('name', event.target.value) })),
-          status,
-          inspection?.migrationRequired === true
-            ? h('div', { className: 'mesh-warn' },
-              h('div', null, t('migrationRequired')),
-              h('div', { className: 'mesh-muted' }, t('migrationHint')),
-              h('div', { className: 'mesh-actions' },
-                h('button', { className: 'mesh-btn', type: 'button', onClick: copyPrompt }, copied ? t('copied') : t('copyPrompt'))))
-            : routeField,
-          h('label', { className: 'mesh-field' }, t('description'),
-            h('textarea', { className: 'mesh-input', rows: 3, value: form.description, onChange: event => set('description', event.target.value) })),
-          h('div', { className: 'mesh-actions' },
-            h('button', { className: 'mesh-btn primary', type: 'submit', disabled: busy || inspection?.migrationRequired === true }, busy ? t('saving') : t('create')),
-            h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel')))))
+              h('button', { className: 'mesh-btn primary', type: 'submit', disabled: busy || inspection?.migrationRequired === true }, busy ? t('saving') : t('create')),
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel'))))),
+        browserOpen ? h(DirectoryBrowser, {
+          ctx, t, startPath: form.repositoryRef.trim() === '' ? undefined : form.repositoryRef.trim(),
+          onCancel: () => setBrowserOpen(false), onChoose: chooseBrowserPath,
+        }) : null)
     }
 
     function ProjectsPage({ ctx, onOpen, t, onModels }) {

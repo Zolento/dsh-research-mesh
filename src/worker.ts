@@ -155,7 +155,7 @@ export class MeshWorker {
     } catch (error) {
       const meshError = error instanceof MeshError ? error : new MeshError('INTERNAL', String(error));
       this.#lastError = `${meshError.code}: ${meshError.message}`;
-      this.#logger.error('worker task failed', { taskId: started.taskId, code: meshError.code, message: meshError.message });
+      this.#logger.error('worker task failed', { taskId: started.taskId, code: meshError.code, message: meshError.message, details: meshError.details });
       try {
         this.#scheduler.fail(started.taskId, claim.attemptId, meshError.code, meshError.message, meshError.code !== 'MANIFEST_INVALID');
       } catch (failError) {
@@ -282,6 +282,10 @@ export class MeshWorker {
   }
 
   async #waitForConsumedJob(jobId: string, timeoutMs: number): Promise<number> {
+    // Give the freshly launched wrapper a moment to publish its remote state;
+    // querying immediately races the transport and would quarantine a healthy
+    // job as REMOTE_STATE_NOT_FOUND.
+    await new Promise(resolve => setTimeout(resolve, 750));
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try { await this.#jobs.query(jobId); } catch { /* remote may not have state yet */ }
