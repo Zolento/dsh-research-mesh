@@ -17,6 +17,7 @@ worktrees, tasks, remote jobs and the control surface.
 - Live local GPU scenario (2 groups × 2 subagents): [`docs/LIVE-GPU-SCENARIO.md`](docs/LIVE-GPU-SCENARIO.md)
 - Live SSH + native-member scenario: [`docs/LIVE-SSH-NATIVE.md`](docs/LIVE-SSH-NATIVE.md)
 - Attaching an existing whole Git repository: [`docs/PROJECT-ONBOARDING.md`](docs/PROJECT-ONBOARDING.md)
+- MoSA migration without a 9.3 GB copy: [`docs/MOSA-MESH-MIGRATION.md`](docs/MOSA-MESH-MIGRATION.md)
 
 ## What is implemented
 

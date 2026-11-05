@@ -283,6 +283,12 @@ async function main() {
     await clickText('检测');
     await waitFor(async () => evaluate('document.body.innerText.includes("已检测") || document.body.innerText.includes("没有 RSI")'), 'repository inspection');
     await waitFor(async () => evaluate('document.querySelector(".mesh-workspace-select") !== null'), 'DSH workspace selector');
+    // The form delegates to the real Add-workspace button and host dialog.
+    console.log('BUTTON LABELS', JSON.stringify(await evaluate(`Array.from(document.querySelectorAll('button')).map(button => ({ text: (button.innerText || '').trim(), aria: button.getAttribute('aria-label'), title: button.getAttribute('title'), disabled: button.disabled, inert: !!button.closest('[inert]') })).filter(row => /工作区|workspace/i.test(row.text + ' ' + (row.aria || '') + ' ' + (row.title || '')))`)));
+    await clickText('打开「添加工作区」');
+    await waitFor(async () => evaluate('document.body.innerText.includes("选择工作区目录")'), 'native add-workspace dialog');
+    await clickText('取消');
+    await waitFor(async () => evaluate('!document.body.innerText.includes("选择工作区目录")'), 'native dialog closed');
     // Workbench.
     await click('.mesh-project');
     await waitFor(async () => evaluate('document.body.innerText.includes("Project Workbench") || document.body.innerText.includes("group-a")'), 'workbench');
