@@ -15,6 +15,7 @@ canonical checkout/          # solo DSH session, canonical RSI state, Git histor
 outside the checkout/
   .mesh/<project>/control/   # SQLite, manifests, shards, outcomes
   .mesh/<project>/worktrees/ # mesh/<group> Git worktrees
+  /data/zhanglt/<project>_store/  # large artifacts, weights, history
 ```
 
 ## Enforced by the plugin
@@ -25,13 +26,23 @@ outside the checkout/
 - Group worktrees always use the `mesh/<group>` branch prefix.
 - `ProjectRegistry` registers a repository as runnable only when its real path
   equals the configured `sourceDir`; other RSI repositories are read-only.
+- `artifactsDir` defaults to `<controlDir>/artifacts`; for MoSA it points at
+  `/data/zhanglt/MoSA_store/mesh/artifacts`. Large products belong in the store,
+  never in the worktree or canonical checkout.
 - The worker reads the canonical RSI state through `RsiAdapter`; it never writes
-  `research-state.json`. The only RSI write path is the explicit `A/B/C` state
-  copy performed by the human/RSI skill, not by Mesh.
+  `research-state.json`. Git naturally checks out tracked state into a worktree,
+  but that copy is only a baseline snapshot; reads use the canonical absolute
+  path, and the only authority is the canonical state.
+- Mesh does not allocate RSI experiment IDs. The RSI single writer reserves the
+  route/XID before dispatch; the worker records the supplied id and artifact
+  paths so collisions can be detected on merge.
 - Job creation starts from the worktree HEAD; uncommitted canonical changes are
   not silently copied into a group. Commit or stash first.
 - A handled consumed-ledger crash is marked `RECONCILE_REQUIRED`; it is never
   resubmitted automatically.
+- A GPU lease is not a system-wide lock. Operators must check the Mesh lease,
+  RSI scheduler and the actual GPU process together; a solo session is invisible
+  to the plugin lease.
 
 ## Solo + team coexistence
 

@@ -16,12 +16,14 @@ test('a whole Git checkout can be the project and source root', () => {
       sourceDir: '.',
       controlDir: join(root, '..', `.mesh-control-${process.pid}`),
       worktreesDir: join(root, '..', `.mesh-worktrees-${process.pid}`),
+      artifactsDir: join(root, '..', `.mesh-store-${process.pid}`),
       sessionBinding: 'external',
       allowFakeTransport: false,
     });
     assert.equal(config.sourceDir, root);
     assert.equal(config.controlDir, join(root, '..', `.mesh-control-${process.pid}`));
     assert.equal(config.databasePath, join(root, '..', `.mesh-control-${process.pid}`, 'runtime.sqlite'));
+    assert.equal(config.artifactsDir, join(root, '..', `.mesh-store-${process.pid}`));
     assertGitSource(config);
     assert.ok(existsSync(config.controlDir), 'the Mesh control directory is created');
     writeFileSync(join(config.controlDir, 'probe'), 'ok');
@@ -29,6 +31,7 @@ test('a whole Git checkout can be the project and source root', () => {
     rmSync(root, { recursive: true, force: true });
     rmSync(join(root, '..', `.mesh-worktrees-${process.pid}`), { recursive: true, force: true });
     rmSync(join(root, '..', `.mesh-control-${process.pid}`), { recursive: true, force: true });
+    rmSync(join(root, '..', `.mesh-store-${process.pid}`), { recursive: true, force: true });
   }
 });
 

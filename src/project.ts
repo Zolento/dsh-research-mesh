@@ -49,7 +49,7 @@ export function ensureProjectLayout(config: MeshConfig): ProjectLayout {
     sessions: ensureDir(join(control, 'sessions')),
     manifests: ensureDir(join(control, 'manifests')),
     logs: ensureDir(join(control, 'logs')),
-    artifacts: ensureDir(join(control, 'artifacts')),
+    artifacts: ensureDir(config.artifactsDir),
     proposals: ensureDir(join(control, 'proposals')),
     outcomes: ensureDir(join(control, 'outcomes')),
     worktrees: ensureDir(config.worktreesDir),

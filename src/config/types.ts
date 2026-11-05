@@ -106,6 +106,8 @@ export interface MeshConfig {
   readonly worktreesDir: string;
   /** Absolute SQLite database path. */
   readonly databasePath: string;
+  /** Absolute root for downloaded Mesh artifacts (may be a store path). */
+  readonly artifactsDir: string;
   /** Durable model-assignment document outside the project database. */
   readonly modelSettingsPath: string;
   /** Session binding mode. */

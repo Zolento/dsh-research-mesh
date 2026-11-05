@@ -35,6 +35,7 @@ group worktrees outside the checkout:
 projectRoot: /home/lenovo/code/myproj/MoSA
 sourceDir: .
 controlDir: /home/lenovo/code/myproj/.mesh/MoSA
+artifactsDir: /data/zhanglt/MoSA_store/mesh/artifacts
 worktreesDir: /home/lenovo/code/myproj/.mesh/MoSA/worktrees
 ```
 

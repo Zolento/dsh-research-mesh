@@ -383,6 +383,12 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     projectRoot,
   );
   const databasePath = wholeRepo ? databaseRaw : insideRoot(projectRoot, databaseRaw, 'databasePath');
+  const artifactsPathRaw = absolutePath(
+    optionalString(input.artifactsDir, 'artifactsDir') ?? join(controlDir, 'artifacts'),
+    'artifactsDir',
+    projectRoot,
+  );
+  const artifactsDir = wholeRepo ? artifactsPathRaw : insideRoot(projectRoot, artifactsPathRaw, 'artifactsDir');
   const modelSettingsPath = absolutePath(
     optionalString(input.modelSettingsPath, 'modelSettingsPath') ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-research-mesh', 'model-settings.json'),
     'modelSettingsPath',
@@ -394,6 +400,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     sourceDir,
     worktreesDir,
     databasePath,
+    artifactsDir,
     modelSettingsPath,
     nativeMembers,
     sessionBinding,
