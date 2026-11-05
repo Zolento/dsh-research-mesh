@@ -84,7 +84,7 @@ job at `OUTPUT_READY` and retries only the transfer.
 
 ## Web console extension points
 
-Verified on DSH 0.2.1-rc.5:
+Verified on DSH 0.2.2-rc.1 (baseline rc5 remains covered):
 
 | Slot | Registration | Purpose |
 |---|---|---|

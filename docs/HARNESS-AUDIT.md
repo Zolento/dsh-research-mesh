@@ -190,7 +190,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 74 tests, 0 failures.
+- `npm run test:all` — 75 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push, deployment, real SSH, real GPU, or upstream modification.

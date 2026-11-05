@@ -102,13 +102,42 @@ export async function apply(ctx: MeshPluginContext, rawConfig?: unknown): Promis
   await service.init();
   ctx.provide(SERVICE_KEY, service);
   registerMeshApi(ctx, service);
+  logger.debug('host services at apply', {
+    agents: asAgents(ctx.get('agents')) !== undefined,
+    sessionController: asSessionController(ctx.get('sessionController')) !== undefined,
+    workspaceController: asWorkspaceController(ctx.get('workspaceController')) !== undefined,
+    llm: asLlm(ctx.get('llm')) !== undefined,
+    settings: settings !== undefined,
+  });
+  ctx.inject(['agents'], child => {
+    logger.debug('late host binding', { service: 'agents', available: asAgents(child.get('agents')) !== undefined });
+    const agents = asAgents(child.get('agents'));
+    if (agents !== undefined) service.attachAgents(agents);
+  });
   ctx.inject(['sessionController'], child => {
+    logger.debug('late host binding', { service: 'sessionController', available: asSessionController(child.get('sessionController')) !== undefined });
     const controller = asSessionController(child.get('sessionController'));
     if (controller !== undefined) service.attachSessionController(controller);
   });
   ctx.inject(['workspaceController'], child => {
+    logger.debug('late host binding', { service: 'workspaceController', available: asWorkspaceController(child.get('workspaceController')) !== undefined });
     const controller = asWorkspaceController(child.get('workspaceController'));
     if (controller !== undefined) service.attachWorkspaceController(controller);
+  });
+  ctx.inject(['llm'], child => {
+    const lateLlm = asLlm(child.get('llm'));
+    if (lateLlm !== undefined) service.attachLlm(lateLlm);
+  });
+  ctx.inject(['settings'], child => {
+    const lateSettings = asSettings(child.get('settings'));
+    logger.debug('late host binding', { service: 'settings', available: lateSettings !== undefined });
+    if (lateSettings !== undefined && assignments !== undefined) {
+      service.attachModelSettingsStore(new ConfigModelSettingsStore({
+        settings: lateSettings,
+        namespace: 'dsh-research-mesh',
+        ref: assignments,
+      }));
+    }
   });
   ctx.effect(() => async () => {
     await service.close();

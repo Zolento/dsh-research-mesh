@@ -120,6 +120,10 @@ export class MeshService {
   #jobs: ExperimentJobService | null = null;
   #worker: MeshWorker | null = null;
   #models: ModelResolver | null = null;
+  #agents: DshHostContext['agents'];
+  #llm: DshLlmLike | undefined;
+  #sessionController: DshHostContext['sessionController'];
+  #workspaceController: DshHostContext['workspaceController'];
   #workerId: string | null = null;
   #transportKind = 'none';
 
@@ -130,6 +134,10 @@ export class MeshService {
     this.#config = options.config;
     this.#logger = options.logger;
     this.#host = options.host ?? {};
+    this.#agents = this.#host.agents;
+    this.#llm = this.#host.llm;
+    this.#sessionController = this.#host.sessionController;
+    this.#workspaceController = this.#host.workspaceController;
     this.#sessionHostOverride = options.sessionHost;
     this.#catalogOverride = options.modelCatalog;
     this.#settingsOverride = options.modelSettings;
@@ -253,14 +261,34 @@ export class MeshService {
     return this.#initialized;
   }
 
+  /** Replace the model-settings store when the DSH Settings service appears late. */
+  attachModelSettingsStore(store: import('./teams/models.ts').ModelSettingsStore): void {
+    this.#models?.replaceStore(store);
+  }
+
+  /** Late-bind the Host AgentRegistry when it activates after the plugin. */
+  attachAgents(agents: import('./teams/session-host.ts').DshAgentsLike): void {
+    this.#agents = agents;
+    const host = this.#teams?.sessionHost;
+    if (host instanceof DshSessionHost) host.attachAgents(agents);
+  }
+
+  /** Late-bind the Host LLM catalog when it activates after the plugin. */
+  attachLlm(llm: DshLlmLike): void {
+    this.#llm = llm;
+    this.#models?.replaceCatalog(new DshModelCatalog(llm));
+  }
+
   /** Late-bind the Host SessionController when it activates after the plugin. */
   attachSessionController(controller: import('./teams/session-host.ts').DshSessionControllerLike): void {
+    this.#sessionController = controller;
     const host = this.#teams?.sessionHost;
     if (host instanceof DshSessionHost) host.attachSessionController(controller);
   }
 
   /** Late-bind the Host WorkspaceController when it activates after the plugin. */
   attachWorkspaceController(controller: import('./teams/session-host.ts').DshWorkspaceControllerLike): void {
+    this.#workspaceController = controller;
     const host = this.#teams?.sessionHost;
     if (host instanceof DshSessionHost) host.attachWorkspaceController(controller);
   }
@@ -400,7 +428,7 @@ export class MeshService {
   }
 
   agentStatus(sessionId: string): string | undefined {
-    return this.#host.agents?.get?.(sessionId)?.status;
+    return this.#agents?.get?.(sessionId)?.status;
   }
 
   /** Assemble the read-only Project Workbench projection. */
@@ -416,9 +444,9 @@ export class MeshService {
       const rootModel = this.#requireStore().getAgentModel(team.rootSessionId);
       if (rootModel !== undefined) agentModels.unshift(rootModel);
       const liveStatus: Record<string, string | null> = {
-        [team.rootSessionId]: this.#host.agents?.get?.(team.rootSessionId)?.status ?? null,
+        [team.rootSessionId]: this.#agents?.get?.(team.rootSessionId)?.status ?? null,
       };
-      for (const subagent of subagents) liveStatus[subagent.sessionId] = this.#host.agents?.get?.(subagent.sessionId)?.status ?? null;
+      for (const subagent of subagents) liveStatus[subagent.sessionId] = this.#agents?.get?.(subagent.sessionId)?.status ?? null;
       const workspace = team.workspaceId === null ? null : this.#requireStore().getWorkspace(team.workspaceId) ?? null;
       groups.push({
         team,
@@ -998,14 +1026,14 @@ export class MeshService {
   #createSessionHost(): SessionHost {
     if (this.#config.sessionBinding === 'external') return new ExternalSessionHost();
     return new DshSessionHost({
-      agents: this.#host.agents,
-      ...(this.#host.sessionController === undefined ? {} : { sessionController: this.#host.sessionController }),
-      ...(this.#host.workspaceController === undefined ? {} : { workspaceController: this.#host.workspaceController }),
+      agents: this.#agents,
+      ...(this.#sessionController === undefined ? {} : { sessionController: this.#sessionController }),
+      ...(this.#workspaceController === undefined ? {} : { workspaceController: this.#workspaceController }),
     });
   }
 
   #createCatalog(): ModelCatalog {
-    if (this.#host.llm !== undefined) return new DshModelCatalog(this.#host.llm);
+    if (this.#llm !== undefined) return new DshModelCatalog(this.#llm);
     return new StaticModelCatalog([]);
   }
 

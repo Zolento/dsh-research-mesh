@@ -4,7 +4,7 @@
 [`dsh-research-team-bridge`](https://github.com/Zolento/dsh-research-team-bridge)
 checkout at `/home/lenovo/code/dsh-plugins/dsh-research-team-bridge`, commit
 `2c94b93` (branch `main`). It was copied rather than renamed because that package
-pins DSH 0.2.0-rc.2, cannot install on the local 0.2.1-rc.5 host, and uses a removed
+pins DSH 0.2.0-rc.2, cannot install on the current 0.2.2-rc.1 host, and uses a removed
 subagent API. Its host-free domain still compiles and is the durable scientific layer
 of this plugin.
 

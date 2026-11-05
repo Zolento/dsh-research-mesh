@@ -7,26 +7,29 @@ Commit: `35ca703` (latest); audit commits `9a7c757`, `41c1aad`; delivery `327177
 
 ## Verified environment
 
-- Installed DSH: `0.2.1-rc.5`
+- Target runtime: `@deepseek-ai/dsh 0.2.2-rc.1`
 - Source checkout: `/home/lenovo/code/dsh-plugins/deepseek-harness`,
-  tag `dsh-v0.2.1-rc.2`, commit `687f282e86`
-- Node: `v22.23.2`
+  tag `dsh-v0.2.2-rc.1`, commit `66491b05e3`
+- Node for rc1: `v24.12.0`; Node 22 remains supported by the plugin source/tests
 - RSI: `/home/lenovo/.agents/skills/rsi-pipeline`, install source
   `2269957302bd0e8c1b18fdea7c5f9c229ddaa420`
-- DSH Web acceptance runs an isolated profile, port and `DSH_HOME`; the user's running
-  GUI/profile is untouched.
+- DSH Web acceptance runs an isolated profile, port and `DSH_HOME`; the user's
+  GUI/profile is untouched. It was run against the published rc1 install with
+  Node 24 and against the rc5 baseline.
 
 ## Test result at delivery
 
 | Suite | Tests | Result |
 |---|---|---|
-| Unit | 64 | pass |
+| Unit | 65 | pass |
 | Integration | 6 | pass |
 | End-to-end + fault injection | 4 | pass |
-| **Total** | **74** | **pass, 0 fail, 0 skip** |
+| **Total** | **75** | **pass, 0 fail, 0 skip** |
 | Typecheck | `tsc --noEmit` | pass |
 | Client bundle syntax | `node --check client/client.js` | pass |
 | Real Web UI acceptance | Chrome CDP script | pass |
+
+DSH rc1 adaptation: [DSH-0.2.2-rc1.md](DSH-0.2.2-rc1.md).
 
 Group-control audit (destroyed-group quota, project pause drift, Captain rollback,
 member binding ownership, GPU double-lease, artifact ingestion, remote retry):
@@ -37,12 +40,19 @@ Commands actually run:
 ```bash
 node scripts/link-toolchain.mjs
 npm run typecheck
-npm test
-npm run test:integration
-npm run test:e2e
-npm run test:all
-node scripts/ui-acceptance.mjs
+npm run test:all                 # Node 22 / rc5 baseline
+PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
+  DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
+  node --test 'tests/**/*.test.ts'  # Node 24 / rc1
+PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
+  DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
+  node --test tests/integration/dsh-loader.test.ts
+PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
+  DSH_BIN=/tmp/dsh-rc1/node_modules/.bin/dsh \
+  DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
+  node scripts/ui-acceptance.mjs
 ```
+
 
 ## Completed phases
 

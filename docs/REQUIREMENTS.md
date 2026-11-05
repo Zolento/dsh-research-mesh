@@ -45,12 +45,12 @@ DSH Research Mesh 是**面向 RSI Pipeline 的轻量级多群组科研协作运�
 
 | 项 | 值 |
 |---|---|
-| 已安装运行态 | `/home/lenovo/.nvm/versions/node/v22.23.2/lib/node_modules/@deepseek-ai/dsh` |
-| 已安装版本 | `@deepseek-ai/dsh 0.2.1-rc.5` |
+| 目标运行态 | 发布包 `@deepseek-ai/dsh 0.2.2-rc.1`（临时 npm 安装验证） |
 | 本地源码 checkout | `/home/lenovo/code/dsh-plugins/deepseek-harness` |
-| 源码 tag | `dsh-v0.2.1-rc.2` |
-| 源码 commit | `687f282e86…` |
-| Node | `v22.23.2`（原生 TS type stripping 可用，`node file.ts`） |
+| 源码 tag | `dsh-v0.2.2-rc.1` |
+| 源码 commit | `66491b05e3…` |
+| Node | `v24.12.0`（rc1 要求 >=24.9.0）；插件源码/Tests 仍可用 Node 22 验证 |
+| 兼容基线 | 保留 `0.2.1-rc.5` 回归验证 |
 | SQLite | `node:sqlite` 可用（`DatabaseSync`），有 ExperimentalWarning |
 | DSH home | `/home/lenovo/.dsh` |
 | Web GUI | `http://127.0.0.1:3080` |
@@ -60,7 +60,7 @@ DSH Research Mesh 是**面向 RSI Pipeline 的轻量级多群组科研协作运�
 ### 1.2 插件加载事实
 
 - 外部插件包：`type: module`、`main` 指向入口、`dsh.bundle.patch`、可选 `dsh.client.platform: "web"` + `exports["./client"]`。
-- 版本门禁优先看 `engines.dsh`。当前项目声明：`">=0.2.1-rc.2 <0.3.0-0"`。
+- 版本门禁优先看 `engines.dsh`。当前项目声明：`">=0.2.1-rc.2 <0.3.0-0"`。rc1 的兼容性检查使用 `includePrerelease: true`，因此该范围覆盖 `0.2.2-rc.1`；已在 rc1 `evaluatePluginCompatibility()` 中实测。
 - 本地免安装加载：`dsh --profile <p> --patch <abs.yml>`，patch 里 `name` 可为**绝对文件路径**。
 - 真实 Loader 进程内测试：`@deepseek-ai/dsh-app-boot` 的 `boot(binName, absoluteConfigPath)`。
 - 插件 `apply` 若为 async，**不能返回非 disposer 的对象**（Cordis 会报 `Invalid effect`）；异步 apply 必须返回 `undefined`。

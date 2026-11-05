@@ -13,6 +13,7 @@ worktrees, tasks, remote jobs and the control surface.
 - Tests and evidence: [`docs/TESTING.md`](docs/TESTING.md)
 - Group-control harness audit and fixed bugs: [`docs/HARNESS-AUDIT.md`](docs/HARNESS-AUDIT.md)
 - Current status and limits: [`docs/STATUS.md`](docs/STATUS.md)
+- DSH 0.2.2-rc.1 adaptation: [`docs/DSH-0.2.2-rc1.md`](docs/DSH-0.2.2-rc1.md)
 
 ## What is implemented
 
@@ -45,7 +46,8 @@ worktrees, tasks, remote jobs and the control surface.
 
 ## Install locally (no network deployment)
 
-The package is a normal DSH bundle with an optional Web client half.
+The package is a normal DSH bundle with an optional Web client half. It is verified
+against DSH `0.2.2-rc.1` (Node 24) and remains compatible with the `0.2.1-rc.x` baseline.
 
 ```bash
 cd dsh-research-mesh

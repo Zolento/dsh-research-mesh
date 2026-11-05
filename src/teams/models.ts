@@ -171,8 +171,8 @@ function validateChoice(value: unknown, field: string): ModelChoice {
 
 /** Resolve manual model choices against the live catalog. */
 export class ModelResolver {
-  readonly #store: ModelSettingsStore;
-  readonly #catalog: ModelCatalog;
+  #store: ModelSettingsStore;
+  #catalog: ModelCatalog;
   readonly #fallback: ModelChoice | undefined;
 
   /**
@@ -189,6 +189,16 @@ export class ModelResolver {
 
   get #version(): string {
     return `settings-v${this.#store.read().version}`;
+  }
+
+  /** Replace the persisted backing store without rebuilding the resolver. */
+  replaceStore(store: ModelSettingsStore): void {
+    this.#store = store;
+  }
+
+  /** Replace the live catalog when the Host LLM service appears late. */
+  replaceCatalog(catalog: ModelCatalog): void {
+    this.#catalog = catalog;
   }
 
   /** Current settings document. */

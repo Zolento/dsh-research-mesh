@@ -79,3 +79,23 @@ test('a model-selection failure discards the controller session instead of leavi
   );
   assert.deepEqual(cancelled, ['session-bad']);
 });
+
+test('late Attached AgentRegistry is used when the host activates it after the plugin', async () => {
+  const created: unknown[] = [];
+  const agents = {
+    async create(options: unknown) {
+      created.push(options);
+      return { agent: { id: 'session-child' }, dispose: async () => {} };
+    },
+    async resume() { return { agent: { id: 'session-child' }, dispose: async () => {} }; },
+    get(id: string) { return { id }; },
+  };
+  const host = new DshSessionHost({});
+  host.attachAgents(agents);
+  const child = await host.createSubagent({
+    teamId: 'team-1', rootSessionId: 'session-captain', name: 'worker-1', role: 'experiment',
+    cwd: '/tmp/group-a-worktree', provider: 'mock', model: 'mock-flash',
+  });
+  assert.ok(child.sessionId.startsWith('mesh-worker-1-'));
+  assert.equal(created.length, 1);
+});

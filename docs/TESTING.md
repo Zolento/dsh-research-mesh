@@ -14,11 +14,21 @@ npm test              # tests/unit
 npm run test:integration
 npm run test:e2e
 npm run test:all
-node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome
+node scripts/ui-acceptance.mjs   # real Web profile + headless Chrome (rc5 baseline)
+
+# rc1: use the Node 24 binary and a published rc1 install
+PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
+  DSH_BIN=/tmp/dsh-rc1/node_modules/.bin/dsh \
+  DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
+  node scripts/ui-acceptance.mjs
+
+PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
+  DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
+  node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 74 tests after the group-control harness audit
-(64 unit + 6 integration + 4 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 75 tests after the group-control harness audit and rc1 adaptation
+(65 unit + 6 integration + 4 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
@@ -105,6 +115,16 @@ Fault B — partial artifact transfer:
     `mock/mock-flash`;
   - creates a control discussion, verifies its binding and project entry.
 - exits nonzero on any assertion; screenshots are written to `docs/screenshots/`.
+
+## DSH 0.2.2-rc.1 adaptation evidence
+
+- Real Cordis loader test passes with the published rc1 package and Node 24.
+- Full unit/integration/e2e suite passes with the rc1 schemastery package linked.
+- Real WebUI acceptance passes on rc1: group creation, controller sessions,
+  Captain/member navigation, settings persistence, and responsive screenshots.
+- rc1 activates host services later than rc5; the plugin now late-binds agents,
+  sessionController, workspaceController, llm and settings, and replaces the
+  model store with the DSH-native Config store when settings appears.
 
 ## Not tested (honest gaps)
 

@@ -23,8 +23,12 @@ test('real Cordis loader mounts the plugin, runs a task and releases resources',
     assert.ok(true, 'installed DSH not found; loader integration skipped');
     return;
   }
-  const bootPath = join(install, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js');
-  if (!existsSync(bootPath)) {
+  const bootCandidates = [
+    join(install, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js'),
+    join(install, '..', 'dsh-app-boot', 'lib', 'index.js'),
+  ];
+  const bootPath = bootCandidates.find(candidate => existsSync(candidate));
+  if (bootPath === undefined) {
     assert.ok(true, 'dsh-app-boot not installed; loader integration skipped');
     return;
   }

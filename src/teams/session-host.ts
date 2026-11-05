@@ -117,10 +117,16 @@ export interface DshHostContext {
 export class DshSessionHost implements SessionHost {
   readonly binding = 'dsh' as const;
   readonly #ctx: DshHostContext;
+  #agents: DshAgentsLike | undefined;
   readonly #handles = new Map<string, { agent: DshAgentLike; dispose(): Promise<void> }>();
   readonly #controllerSessions = new Set<string>();
   #sessionController: DshSessionControllerLike | undefined;
   #workspaceController: DshWorkspaceControllerLike | undefined;
+
+  /** Attach the Host AgentRegistry when it appears after plugin activation. */
+  attachAgents(agents: DshAgentsLike): void {
+    this.#agents = agents;
+  }
 
   /** Attach the Host SessionController when it appears after plugin activation. */
   attachSessionController(controller: DshSessionControllerLike): void {
@@ -135,7 +141,7 @@ export class DshSessionHost implements SessionHost {
   #discardControllerSession(sessionId: string, reason: string): void {
     this.#controllerSessions.delete(sessionId);
     try {
-      this.#ctx.agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-controller-failure', reason });
+      this.#agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-controller-failure', reason });
     } catch {
       // Session persistence remains; no better cleanup primitive is exposed.
     }
@@ -146,6 +152,7 @@ export class DshSessionHost implements SessionHost {
    */
   constructor(ctx: DshHostContext) {
     this.#ctx = ctx;
+    this.#agents = ctx.agents;
     this.#sessionController = ctx.sessionController;
     this.#workspaceController = ctx.workspaceController;
   }
@@ -156,7 +163,7 @@ export class DshSessionHost implements SessionHost {
    * @returns session id.
    */
   async createRoot(input: CreateRootSessionInput): Promise<{ sessionId: string }> {
-    const agents = this.#ctx.agents;
+    const agents = this.#agents;
     if (agents === undefined) {
       throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot create a root session', {
         teamId: input.teamId,
@@ -210,7 +217,7 @@ export class DshSessionHost implements SessionHost {
    * @returns child session id.
    */
   async createControl(input: CreateRootSessionInput): Promise<{ sessionId: string }> {
-    const agents = this.#ctx.agents;
+    const agents = this.#agents;
     if (agents === undefined) {
       throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot create a control session', {
         teamId: input.teamId,
@@ -289,7 +296,7 @@ export class DshSessionHost implements SessionHost {
       this.#controllerSessions.add(created.sessionId);
       return { sessionId: created.sessionId };
     }
-    const agents = this.#ctx.agents;
+    const agents = this.#agents;
     if (agents === undefined) {
       throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot create a subagent', {
         teamId: input.teamId,
@@ -338,7 +345,7 @@ export class DshSessionHost implements SessionHost {
    * @param model - model id.
    */
   async resumeRoot(sessionId: string, provider?: string, model?: string): Promise<void> {
-    const agents = this.#ctx.agents;
+    const agents = this.#agents;
     if (agents === undefined) {
       throw new MeshError('SESSION_BINDING_UNAVAILABLE', 'DSH agents service is unavailable; cannot resume a root session', {
         sessionId,
@@ -364,7 +371,7 @@ export class DshSessionHost implements SessionHost {
         this.#handles.delete(sessionId);
         try { await resumedHandle.dispose(); } catch { /* retain */ }
       }
-      try { this.#ctx.agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-group-disposed' }); } catch { /* retain */ }
+      try { this.#agents?.get?.(sessionId)?.cancel?.({ kind: 'mesh-group-disposed' }); } catch { /* retain */ }
       return;
     }
     const handle = this.#handles.get(sessionId);
