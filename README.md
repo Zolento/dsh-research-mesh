@@ -78,6 +78,53 @@ Then configure `projectRoot`, `sourceDir`, `controlDir`, `worktreesDir` and
 (optionally) `artifactsDir` in the profile's `cordis.patch.yml`.
 See [`examples/config.example.yml`](examples/config.example.yml).
 
+## Profiles: one project per DSH profile
+
+A DSH profile is the unit of deployment:
+
+```text
+web          → MoSA (current)
+web-3dzssl   → 3D_ZS_SSL
+web-<slug>   → another canonical Git project
+```
+
+Each profile owns its own:
+
+- `projectRoot` / `sourceDir`
+- control SQLite DB and group quotas
+- worktrees and GPU leases
+- model assignments
+- artifacts store
+- Web port and token
+
+Profiles do **not** share controlDir, worktreesDir or artifactsDir. The RSI
+skill installation and `/data/zhanglt` storage medium are shared.
+
+Create a profile once:
+
+```bash
+# Only for a profile that does not exist. This REPLACES an existing profile.
+dsh --profile web-3dzssl --from-default-profile web --dump-config
+dsh plugin --profile web-3dzssl add /home/lenovo/code/dsh-plugins/dsh-research-mesh
+```
+
+Then set `projectRoot`, `sourceDir`, `controlDir`, `worktreesDir` and
+`artifactsDir` in `~/.dsh/profiles/web-3dzssl/cordis.patch.yml`, and start it on
+a distinct port:
+
+```bash
+dsh --profile web-3dzssl web --port 3081
+```
+
+After that, open Research Mesh in that profile and link the project. The RSI
+routes are detected and the default control/worktrees/artifacts/store
+directories are initialized automatically. Profile creation itself is one-time
+and cannot be done from the running plugin UI; a plain
+`dsh --profile web-3dzssl web` does not auto-create the profile.
+
+See [PROFILE-PER-PROJECT.md](docs/PROFILE-PER-PROJECT.md) and the
+[example profile config](examples/profile-per-project.example.yml).
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
