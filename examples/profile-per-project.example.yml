@@ -1,0 +1,22 @@
+# Example: one DSH profile for one canonical project.
+# Copy the dsh-research-mesh row into
+# ~/.dsh/profiles/<profile>/cordis.patch.yml and replace <project>.
+- id: dsh-research-mesh
+  name: dsh-research-mesh
+  config:
+    projectRoot: /home/lenovo/code/myproj/<project>
+    sourceDir: .
+    controlDir: /home/lenovo/code/myproj/.mesh/<project>
+    worktreesDir: /home/lenovo/code/myproj/.mesh/<project>/worktrees
+    artifactsDir: /data/zhanglt/<project>_store/mesh/artifacts
+    sessionBinding: dsh
+    allowFakeTransport: false
+    autoStartScheduler: false
+    startupRecovery: true
+    limits:
+      maxTeams: 3
+      maxSubagentsPerTeam: 4
+      maxSubagentsTotal: 12
+    conda:
+      executable: /home/lenovo/miniconda3/condabin/conda
+      defaultEnvironment: torch

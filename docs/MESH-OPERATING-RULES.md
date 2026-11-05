@@ -58,8 +58,10 @@ Do not use `cp -a` for isolation. Use a Git worktree, or let Mesh create group
 worktrees. Do not archive worktrees as permanent copies; use the project's
 `/data/...` archive rules.
 
-## Switching a plugin runtime
+## Deployment: one profile per project
 
-One DSH profile has one executable `sourceDir`. To switch the canonical
-repository, update `projectRoot`/`sourceDir` in the profile patch (or use a
-separate profile), restart DSH, and re-attach the project.
+One DSH profile has one executable project. Keep MoSA in `web` (or `web-mosa`)
+and create `web-<project>` for every other canonical repository, each on its own
+port, controlDir and store path. See
+[PROFILE-PER-PROJECT.md](PROFILE-PER-PROJECT.md). Restart the affected profile
+after changing `projectRoot`, `sourceDir`, `controlDir` or `artifactsDir`.

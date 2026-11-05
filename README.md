@@ -31,8 +31,9 @@ artifact ingestion and the Web control surface.
 5. **Isolation is not a sandbox.** Git worktrees isolate files, not the OS,
    network or GPU. Operators must check Mesh leases, RSI scheduler and the real
    GPU process together.
-6. **One executable source per DSH profile.** Other projects can be registered
-   read-only; use another profile for a second runnable repository.
+6. **One project per DSH profile.** Each profile owns one executable source,
+   its own model settings, quotas and control DB; use another profile for a
+   second project. Do not load one profile twice.
 
 ## Relationship to RSI and the AGENTS standard
 
@@ -82,6 +83,7 @@ See [`examples/config.example.yml`](examples/config.example.yml).
 - [Architecture](docs/ARCHITECTURE.md)
 - [Requirements](docs/REQUIREMENTS.md)
 - [Canonical checkout + Mesh worktrees](docs/MESH-OPERATING-RULES.md)
+- [One profile per project](docs/PROFILE-PER-PROJECT.md)
 - [Project onboarding](docs/PROJECT-ONBOARDING.md)
 - [MoSA migration](docs/MOSA-MESH-MIGRATION.md)
 - [DSH 0.2.2-rc.1 adaptation](docs/DSH-0.2.2-rc1.md)
