@@ -267,6 +267,18 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: await service.simulateLocalTask(projectId, teamId) });
         return;
       }
+      if (path === '/native-delegation' && method === 'GET') {
+        const sessionId = url.searchParams.get('sessionId');
+        if (sessionId === null) throw new MeshError('INVALID_ARGUMENT', 'sessionId is required');
+        send(res, 200, {
+          ok: true,
+          value: {
+            sessionId,
+            denial: service.nativeSubagentDenial(sessionId) ?? null,
+          },
+        });
+        return;
+      }
       if (path === '/session' && method === 'GET') {
         const sessionId = url.searchParams.get('sessionId');
         if (sessionId === null) throw new MeshError('INVALID_ARGUMENT', 'sessionId is required');

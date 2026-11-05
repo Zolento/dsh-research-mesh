@@ -127,6 +127,7 @@ export class MeshService {
   #workspaceController: DshHostContext['workspaceController'];
   #workerId: string | null = null;
   #transportKind = 'none';
+  #closing = false;
 
   /**
    * @param options - configuration and injectable seams.
@@ -233,6 +234,9 @@ export class MeshService {
   /** Stop timers, release live session handles and close SQLite. Idempotent. */
   async close(): Promise<void> {
     if (!this.#initialized) return;
+    // Set before teardown: session disposal during shutdown must not detach
+    // durable project bindings.
+    this.#closing = true;
     this.#initialized = false;
     this.#worker?.stop();
     try { await this.#teams?.close(); } catch (error) {
@@ -424,6 +428,34 @@ export class MeshService {
     return this.#requireProjects().detach(sessionId);
   }
 
+  /**
+   * React to a disposed Host session.
+   *
+   * A `control` binding is a durable association with a chat; when that chat is
+   * deleted its binding is removed so the project is not left pointing at a
+   * missing Session. Captain and member bindings are owned by the group
+   * lifecycle and survive session disposal (a restart disposes Agents without
+   * meaning to retire a group). Disposal during plugin shutdown is ignored.
+   * @param sessionId - disposed session identity.
+   * @returns true when a control binding was detached.
+   */
+  onSessionDisposed(sessionId: string): boolean {
+    if (this.#closing || !this.#initialized) return false;
+    const projects = this.#projects;
+    if (projects === null) return false;
+    const binding = projects.activeBinding(sessionId);
+    if (binding === undefined || binding.role !== 'control') return false;
+    const detached = projects.detach(sessionId);
+    if (detached) {
+      this.#store?.appendEvent('session', sessionId, 'control-session-disposed', { projectId: binding.projectId });
+      this.#logger.info('control session disposed; project binding detached', {
+        sessionId,
+        projectId: binding.projectId,
+      });
+    }
+    return detached;
+  }
+
   sessionBinding(sessionId: string): import('./storage/types.ts').MeshSessionBinding | undefined {
     return this.#requireProjects().activeBinding(sessionId);
   }
@@ -594,6 +626,47 @@ export class MeshService {
     }).task;
     const round = await this.#requireWorker().runOnce();
     return round.task?.taskId === task.taskId ? round.task : this.#requireScheduler().get(task.taskId);
+  }
+
+  // -- native delegation guard ---------------------------------------------
+
+  /**
+   * Decide whether a model-invoked native `subagent` tool may create another
+   * child for this parent session.
+   *
+   * Mesh quotas apply to every Mesh-owned creation path, but the native
+   * `subagent` tool creates children without passing through them. This is the
+   * host-side guard that closes that hole: it denies a new native child when the
+   * parent's group is already at its member cap, when the global cap is reached,
+   * or when the parent is itself a member (a member must not fan out further).
+   * Sessions that are not bound to a Mesh project are left alone.
+   * @param parentSessionId - session invoking the tool.
+   * @returns a denial reason, or undefined to allow.
+   */
+  nativeSubagentDenial(parentSessionId: string | undefined): string | undefined {
+    if (parentSessionId === undefined || this.#initialized === false) return undefined;
+    const binding = this.#projects?.activeBinding(parentSessionId);
+    if (binding === undefined) return undefined;
+    if (binding.role === 'control') return undefined;
+    const team = this.#teams?.list().find(candidate => candidate.teamId === binding.groupId);
+    if (team === undefined) return undefined;
+    if (binding.role === 'member') {
+      return `Research Mesh: member sessions cannot delegate further (group ${team.name})`;
+    }
+    if (team.status !== 'active') {
+      return `Research Mesh: group ${team.name} is ${team.status}; native delegation is disabled`;
+    }
+    if (this.#teams !== null) {
+      const inTeam = this.#teams.listSubagents(team.teamId).filter(member => member.status !== 'disposed').length;
+      if (inTeam >= this.#config.limits.maxSubagentsPerTeam) {
+        return `Research Mesh: group ${team.name} already has ${inTeam} subagents (limit ${this.#config.limits.maxSubagentsPerTeam})`;
+      }
+      const total = this.#teams.totalSubagents();
+      if (total >= this.#config.limits.maxSubagentsTotal) {
+        return `Research Mesh: ${total} subagents exist globally (limit ${this.#config.limits.maxSubagentsTotal})`;
+      }
+    }
+    return undefined;
   }
 
   // -- teams ---------------------------------------------------------------

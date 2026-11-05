@@ -27,8 +27,8 @@ PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 77 tests after the group-control harness audit, rc1 adaptation and live GPU run
-(67 unit + 6 integration + 4 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 86 tests after the harness audit, rc1 adaptation, live GPU run and the
+follow-up defect fixes (74 unit + 8 integration + 4 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
@@ -46,6 +46,8 @@ regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 | `projects.test.ts` | project registration; invalid/missing RSI state; restart; readability failure; control/member bindings and cross-project refusal; manual-pause preservation; archive; startup pause reconciliation; Captain-binding rollback; destroy detaches bindings |
 | `model-settings.test.ts` | Config-backed DSH settings write/version; stale-cache refresh; empty group schema; override-without-default rejection; selected model reaches session host; file store restart |
 | `client-bundle.test.ts` | loader id; inject; main/sidebar/settings/header/hero registrations; initial component render |
+| `native-guard.test.ts` | `tools.guard` denies member fan-out, paused group, group cap and global cap; ignores unrelated tools |
+| `shim.test.ts` | blocking-shim spec/result protocol, exit-code mirroring, timeout code, schema rejection |
 | `session-host.test.ts` | controller member creation without live Captain; model failure cancels the short-lived session |
 
 ### Integration

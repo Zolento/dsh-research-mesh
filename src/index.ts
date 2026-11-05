@@ -31,6 +31,7 @@ export interface MeshPluginContext {
     effect(body: () => (() => void) | Promise<() => void>, label: string): unknown;
     webServer: import('./host/web-api.ts').WebServerLike;
   }) => void): unknown;
+  on?(name: string, callback: (...args: never[]) => void, options?: { global?: boolean }): unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void; error?: (message: string) => void };
 }
 
@@ -64,6 +65,27 @@ function asSessionController(value: unknown): DshSessionControllerLike | undefin
   if (typeof candidate.create !== 'function' || typeof candidate.selectModel !== 'function') return undefined;
   return candidate as DshSessionControllerLike;
 }
+
+/**
+ * Structural view of DSH's tool registry, limited to the monotonic guard seam.
+ * Guards run after extensible pre-execute policy and cannot grant permission.
+ */
+export interface DshToolsLike {
+  guard(guard: (execution: {
+    readonly name: string;
+    readonly agent?: { readonly id: string };
+  }) => string | undefined): () => void;
+}
+
+function asTools(value: unknown): DshToolsLike | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<DshToolsLike>;
+  if (typeof candidate.guard !== 'function') return undefined;
+  return candidate as DshToolsLike;
+}
+
+/** Native delegation tool names this guard covers (the default plus provider variants). */
+const NATIVE_DELEGATION_TOOL = /^subagent($|_)/;
 
 function asSettings(value: unknown): SettingsFormsLike | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -102,6 +124,14 @@ export async function apply(ctx: MeshPluginContext, rawConfig?: unknown): Promis
   await service.init();
   ctx.provide(SERVICE_KEY, service);
   registerMeshApi(ctx, service);
+  if (typeof ctx.on === 'function') {
+    ctx.effect(() => {
+      const dispose = ctx.on?.('session/disposed', ((session: { id?: string } | undefined) => {
+        if (typeof session?.id === 'string') service.onSessionDisposed(session.id);
+      }) as never, { global: true });
+      return typeof dispose === 'function' ? dispose as () => void : () => {};
+    }, 'dsh-research-mesh control binding cleanup');
+  }
   logger.debug('host services at apply', {
     agents: asAgents(ctx.get('agents')) !== undefined,
     sessionController: asSessionController(ctx.get('sessionController')) !== undefined,
@@ -127,6 +157,14 @@ export async function apply(ctx: MeshPluginContext, rawConfig?: unknown): Promis
   ctx.inject(['llm'], child => {
     const lateLlm = asLlm(child.get('llm'));
     if (lateLlm !== undefined) service.attachLlm(lateLlm);
+  });
+  ctx.inject(['tools'], child => {
+    const tools = asTools(child.get('tools'));
+    if (tools === undefined) return;
+    child.effect(() => tools.guard(execution => {
+      if (!NATIVE_DELEGATION_TOOL.test(execution.name)) return undefined;
+      return service.nativeSubagentDenial(execution.agent?.id);
+    }), 'dsh-research-mesh native subagent quota guard');
   });
   ctx.inject(['settings'], child => {
     const lateSettings = asSettings(child.get('settings'));

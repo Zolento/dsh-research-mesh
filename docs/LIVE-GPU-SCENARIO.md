@@ -120,6 +120,14 @@ GPU was free.
 GPU 0 and completed. This is test-only transport; production SSH still uses
 `SshGpuProbe`.
 
+### Fixed after this run: three recorded defects
+
+The three defects this scenario and the harness audit left open were fixed in
+the follow-up round: durable `prepared -> submitting` job CAS, a host
+`tools.guard()` for native `subagent` calls, and automatic `control` binding
+detach on session disposal. See
+[HARNESS-AUDIT.md](HARNESS-AUDIT.md) "Closed in the follow-up round".
+
 ### Test-harness issue: prompt assertion was too weak
 
 The driver's `sawExpectedText` check searched the serialized session including

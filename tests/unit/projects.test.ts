@@ -375,3 +375,46 @@ test('member identity is bound to its group and project', async () => {
     project.cleanup();
   }
 });
+
+test('a disposed control session detaches its binding but a group session does not', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    const team = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    service.attachSession(created.projectId, 'session-control');
+    assert.equal(service.sessionBinding('session-control')?.role, 'control');
+
+    // Disposing a Captain or member session must not retire the group binding.
+    assert.equal(service.onSessionDisposed(team.rootSessionId), false);
+    assert.equal(service.sessionBinding(team.rootSessionId)?.role, 'captain');
+    assert.equal(service.onSessionDisposed('session-unknown'), false);
+
+    // A control chat that disappears takes its binding with it.
+    assert.equal(service.onSessionDisposed('session-control'), true);
+    assert.equal(service.sessionBinding('session-control'), undefined);
+    assert.equal(service.getProject(created.projectId).controlSessions.length, 0);
+    // Idempotent: a second disposal is a no-op.
+    assert.equal(service.onSessionDisposed('session-control'), false);
+    // The project itself is untouched.
+    assert.equal(service.getProject(created.projectId).status, 'active');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
+test('shutdown disposal never detaches durable bindings', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'research', rsiStateRef: statePath(project.root), repositoryRef: project.source });
+    service.attachSession(created.projectId, 'session-control');
+    await service.close();
+    // Simulate the Host disposing sessions during shutdown.
+    const detached = service.onSessionDisposed('session-control');
+    assert.equal(detached, false);
+  } finally {
+    project.cleanup();
+  }
+});

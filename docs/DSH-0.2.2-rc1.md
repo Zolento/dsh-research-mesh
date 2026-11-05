@@ -72,12 +72,12 @@ works with `DSH_INSTALL`.
 ```bash
 # Node 22 baseline, rc5 loader
 npm run typecheck
-npm run test:all                 # 77 tests
+npm run test:all                 # 86 tests
 
 # Node 24 + published rc1
 PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \
-  node --test 'tests/**/*.test.ts'   # 77 tests
+  node --test 'tests/**/*.test.ts'   # 86 tests
 
 PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   DSH_INSTALL=/tmp/dsh-rc1/node_modules/@deepseek-ai/dsh \

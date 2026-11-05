@@ -94,6 +94,7 @@ export interface GpuLeaseRecord {
 /** Execution-layer job lifecycle; independent of scientific status. */
 export type MeshJobStatus =
   | 'prepared'
+  | 'submitting'
   | 'submitted'
   | 'submitted_unconfirmed'
   | 'running'

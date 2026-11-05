@@ -852,6 +852,26 @@ export class MeshStore {
     });
   }
 
+  /**
+   * Atomically claim a prepared job for exactly one submitter.
+   *
+   * Two controllers sharing this database may both try to launch one job (a
+   * duplicate operator submit, a restarted worker, a second DSH instance). The
+   * `prepared -> submitting` transition is the only launch permission, so a
+   * remote command can start at most once per prepared row.
+   * @param jobId - job identity.
+   * @param updatedAt - transition timestamp.
+   * @returns true when this caller won the claim.
+   */
+  claimJobSubmission(jobId: string, updatedAt: string = nowIso()): boolean {
+    return this.#store.transaction(db => {
+      const result = db.prepare(
+        "UPDATE mesh_jobs SET status = 'submitting', updated_at = ? WHERE job_id = ? AND status = 'prepared'",
+      ).run(updatedAt, jobId);
+      return Number(result.changes) === 1;
+    });
+  }
+
   getJob(jobId: string): MeshJobRecord | undefined {
     return this.#store.read(db => {
       const row = db.prepare('SELECT * FROM mesh_jobs WHERE job_id = ?').get(jobId) as Row | undefined;

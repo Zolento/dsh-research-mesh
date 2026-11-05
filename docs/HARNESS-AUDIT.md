@@ -181,18 +181,33 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 - Captain session cannot be registered as a member
 - project activation checks canonical-state readability
 
+## Closed in the follow-up round
+
+- **Cross-process duplicate submit** — `mesh_jobs` now has a durable
+  `prepared -> submitting` compare-and-set (`MeshStore.claimJobSubmission`).
+  Only the winner may stage, submit or take a GPU lease; a loser returns the
+  current status. `tests/integration/job-cas.test.ts` covers the store CAS with
+  two independent handles and the executor refusal (no launch, no lease).
+- **Native `subagent` tool bypassing Mesh quotas** — `MeshService.nativeSubagentDenial()`
+  is registered through `ctx.tools.guard()` on `subagent` / `subagent_*` calls.
+  It denies a member fanning out, a paused group, a group at its member cap and
+  the global cap, and leaves unbound sessions alone. Covered by
+  `tests/unit/native-guard.test.ts`.
+- **Control session deletion left its binding** — a `session/disposed` listener
+  detaches `control` bindings only, ignores shutdown disposal, and never touches
+  captain/member bindings. Covered by `tests/unit/projects.test.ts`.
+- **consumed-ledger** — the blocking-shim rendezvous (`src/rsi/blocking-shim.ts`)
+  is implemented and tested: the Mesh publishes the job outcome and the shim
+  mirrors its exit code, so RSI's `run --execute` can consume exactly once while
+  the Mesh remains the only launcher. Wiring it into `MeshWorker` as an opt-in
+  authorization mode is the next step.
+
 ## Remaining limitations (not papered over)
 
-- **Cross-process duplicate submit without a GPU** is still possible in theory:
-  the in-process submit lock and one-task-one-GPU rule cover the current
-  single-controller GPU deployment, but there is no distributed job CAS.
 - Member sessions are controller-backed DSH sessions grouped by Mesh; they are
   not native `SubagentRuntime` continuable children, so DSH Agent Team roster
   parentage is not the authority yet.
-- Native model-invoked `subagent` tool calls bypass Mesh quotas.
 - Real SSH/Conda/GPU execution remains unexercised.
-- Session deletion does not automatically detach a control binding; Detach is
-  explicit. Destroying a **group** does detach its generated bindings.
 - A group whose worktree was retained after destruction blocks reuse of the same
   group name/branch until workspace cleanup is explicitly performed.
 

@@ -147,7 +147,22 @@ export class RemoteJobExecutor {
       errorCode: null,
       errorMessage: null,
     };
-    if (existing === undefined) this.#store.insertJob(persisted);
+    if (existing === undefined) {
+      try {
+        this.#store.insertJob(persisted);
+      } catch (error) {
+        // Another controller inserted the same job between the read and the
+        // write. The row is now the authority; this caller must not launch.
+        const raced = this.#store.getJob(validated.job_id);
+        if (raced === undefined) throw error;
+        return {
+          jobId: raced.jobId,
+          status: raced.status,
+          task: this.#scheduler.get(task.taskId),
+          reconcileRequired: raced.status === 'submitting' || raced.status === 'submitted_unconfirmed',
+        };
+      }
+    }
 
     // A prior controller may already have submitted this exact job. Read the
     // remote state BEFORE taking a GPU lease so an adopted run cannot leak one.
@@ -180,6 +195,24 @@ export class RemoteJobExecutor {
         status: current?.status ?? 'submitted',
         task: adopted,
         reconcileRequired: current?.status === 'reconcile_required',
+      };
+    }
+
+    // Only the caller that wins the durable prepared -> submitting CAS may
+    // launch. A concurrent submitter sees `submitting` and returns without
+    // starting a second remote process.
+    if (!this.#store.claimJobSubmission(validated.job_id)) {
+      const owner = this.#store.getJob(validated.job_id);
+      if (owner === undefined) throw new MeshError('STORAGE_ERROR', 'job vanished before submission', { jobId: validated.job_id });
+      this.#logger.warn('duplicate job submission refused; another controller owns this job', {
+        jobId: validated.job_id,
+        status: owner.status,
+      });
+      return {
+        jobId: owner.jobId,
+        status: owner.status,
+        task: this.#scheduler.get(task.taskId),
+        reconcileRequired: owner.status === 'submitting' || owner.status === 'submitted_unconfirmed',
       };
     }
 
@@ -513,7 +546,7 @@ export class RemoteJobExecutor {
   recover(): number {
     let count = 0;
     for (const job of this.#store.listJobs()) {
-      if (!['prepared', 'submitted', 'submitted_unconfirmed', 'running'].includes(job.status)) continue;
+      if (!['prepared', 'submitting', 'submitted', 'submitted_unconfirmed', 'running'].includes(job.status)) continue;
       this.#store.updateJob(job.jobId, {
         status: 'reconcile_required',
         errorCode: 'RECONCILE_REQUIRED',
