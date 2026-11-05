@@ -204,7 +204,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
   Mesh callback. Its unit tests cover success, failed launch release and a
   missing consume; `tests/e2e/consumed-loop.test.ts` runs the installed RSI CLI
   against a real blocking shim and verifies one consume, one launch and artifact
-  ingestion. Crash recovery after a consume but before a launch remains open.
+  ingestion. `tests/unit/consumed-recovery.test.ts` marks that window `RECONCILE_REQUIRED` and verifies recovery never resubmits it.
 - **Real SSH / conda / GPU** — validated against localhost OpenSSH with a
   temporary key: job staging, wrapper, real conda `torch`, RTX 4060 Ti,
   `SshGpuProbe`, artifact download and ingestion all passed. The probe originally
@@ -231,7 +231,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 97 tests, 0 failures.
+- `npm run test:all` — 98 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push/deployment or upstream modification. Real localhost SSH and local GPU were exercised in [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).

@@ -70,6 +70,9 @@ Large data/checkpoints must stay symlinked; never duplicate them.
 
 ## 3. AGENTS.md section for dual solo/Mesh work
 
+This section is now present in the canonical MoSA `AGENTS.md` as §11, and the
+plugin enforcement is documented in [MESH-OPERATING-RULES.md](MESH-OPERATING-RULES.md).
+
 Add this to the project's `AGENTS.md` (canonical or the worktree copy):
 
 ```text

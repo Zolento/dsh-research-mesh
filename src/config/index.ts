@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { MeshError } from '../errors.ts';
 import type {
   ArtifactConfig,
@@ -251,7 +251,10 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
   // worktrees must be allowed to live beside it instead of inside it.
   const wholeRepo = sourceDir === projectRoot;
   const controlRaw = absolutePath(
-    optionalString(input.controlDir, 'controlDir') ?? (wholeRepo ? join(projectRoot, '.research-mesh') : '.research-mesh'),
+    optionalString(input.controlDir, 'controlDir')
+      ?? (wholeRepo
+        ? join(projectRoot, '..', '.mesh', basename(projectRoot), 'control')
+        : '.research-mesh'),
     'controlDir',
     projectRoot,
   );
@@ -264,6 +267,11 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
   const worktreesDir = wholeRepo ? worktreesRaw : insideRoot(projectRoot, worktreesRaw, 'worktreesDir');
   if (sourceDir === worktreesDir) invalid('sourceDir and worktreesDir must differ');
   if (controlDir === sourceDir) invalid('controlDir must differ from sourceDir');
+  // Whole-repository Mesh policy: control state and worktrees are outside the
+  // canonical checkout so solo Git status is never polluted by Mesh metadata.
+  if (wholeRepo && controlDir.startsWith(sourceDir + sep)) {
+    invalid('controlDir must be outside sourceDir for a whole-repository project', { controlDir, sourceDir });
+  }
   if (worktreesDir === sourceDir || worktreesDir.startsWith(sourceDir + sep)) {
     invalid('worktreesDir must not be inside sourceDir');
   }

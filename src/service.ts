@@ -40,6 +40,7 @@ import { SshGpuProbe, SshTransport } from './executors/ssh.ts';
 import { ExperimentJobService } from './executors/job-service.ts';
 import { MeshWorker, type WorkerRoundResult, type WorkerStatus } from './worker.ts';
 import { nowIso } from './util/time.ts';
+import { findConsumeEvent } from './rsi/consumed-run.ts';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
@@ -1027,6 +1028,7 @@ export class MeshService {
     workspaces: readonly WorkspaceInspection[];
   }> {
     this.#requireReady();
+    this.#markConsumedInterruptions();
     const scheduler = this.#requireScheduler().recover(nowMs);
     const jobs = this.#requireJobs().recover();
     const gpu = this.#requireGpu().reconcile();
@@ -1124,9 +1126,61 @@ export class MeshService {
 
   // -- internals -----------------------------------------------------------
 
+  /**
+   * Mark an interrupted consumed-ledger launch before scheduler recovery.
+   *
+   * The RSI receipt is spent before the Mesh job is submitted. If the process
+   * dies in that window, ordinary task recovery would classify the task as a
+   * lost local attempt and could retry it, spending a second receipt. A
+   * journal + consume event instead pins it to RECONCILE_REQUIRED.
+   * @returns number of tasks marked.
+   */
+  #markConsumedInterruptions(): number {
+    const store = this.#requireStore();
+    let marked = 0;
+    for (const group of store.listGroups()) {
+      for (const task of store.teamStore.listTasks(group.teamId)) {
+        if (task.status !== 'claimed' && task.status !== 'running') continue;
+        const meta = store.getTaskMeta(task.task_id);
+        if (meta === undefined) continue;
+        let payload: { rsi?: { shim?: { journalPath?: string }; ledgerPath?: string; experimentId?: string } };
+        try { payload = JSON.parse(meta.payloadJson) as typeof payload; } catch { continue; }
+        const journalPath = payload.rsi?.shim?.journalPath;
+        if (typeof journalPath !== 'string' || !existsSync(journalPath)) continue;
+        let journal: Record<string, unknown>;
+        try { journal = JSON.parse(readFileSync(journalPath, 'utf8')); } catch { continue; }
+        const phase = journal.phase;
+        if (phase !== 'launching' && phase !== 'consumed' && phase !== 'launch_failed') continue;
+        const receiptId = typeof journal.receiptId === 'string' ? journal.receiptId : null;
+        const experimentId = payload.rsi?.experimentId ?? (typeof journal.experimentId === 'string' ? journal.experimentId : null);
+        const ledgerPath = payload.rsi?.ledgerPath ?? journalPath.replace(/\/[^/]+$/, '');
+        if (receiptId === null || experimentId === null) continue;
+        const consumed = findConsumeEvent(ledgerPath, receiptId, experimentId) !== undefined;
+        if (!consumed) continue;
+        // The attempt is spent. Do not let recover() turn it into a retryable failure.
+        this.#requireStore().updateTaskMeta(task.task_id, {
+          remoteStatus: 'RECONCILE_REQUIRED',
+          errorCode: 'CONSUMED_RUN_INTERRUPTED',
+          errorMessage: 'RSI receipt was consumed but the Mesh job was not confirmed; reconcile, never rerun',
+          updatedAt: nowIso(),
+        });
+        this.#requireStore().appendEvent('task', task.task_id, 'consumed-run-interrupted', { receiptId, journalPhase: phase });
+        marked += 1;
+      }
+    }
+    return marked;
+  }
+
+  /** Public test/operator entry for the consumed interruption marker. */
+  markConsumedInterruptions(): number {
+    return this.#markConsumedInterruptions();
+  }
+
   async #startupRecovery(): Promise<void> {
+
     try {
       this.reconcileProjectPauses();
+      this.#markConsumedInterruptions();
       const scheduler = this.#requireScheduler().recover();
       const jobs = this.#requireJobs().recover();
       const gpu = this.#requireGpu().reconcile();

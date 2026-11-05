@@ -78,5 +78,6 @@ that restart was not performed by this test.
 Consumed-ledger support now accepts a shim **authorization manifest** separately
 from the real **execution manifest**. `runConsumedShim` was exercised end-to-end
 against the installed RSI CLI: RSI consumed once, the shim blocked, Mesh launched
-the real wrapper once and ingested artifacts. Crash recovery after a consume but
-before a launch remains open.
+the real wrapper once and ingested artifacts. Crash recovery after a consume but before a launch is covered by
+`tests/unit/consumed-recovery.test.ts`: it is marked `RECONCILE_REQUIRED` and
+never resubmitted.
