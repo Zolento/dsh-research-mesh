@@ -17,6 +17,7 @@ worktree dispatch note. Keep these three in sync.
   the human.
 - The canonical checkout is the only executable `sourceDir`. Mesh control and
   worktrees stay outside it; worktrees use `mesh/<group>` branches.
+- Attaching a runnable project creates its default control/worktrees/artifacts/store directories; it never creates RSI state.
 - Large artifacts go to the configured `artifactsDir` (MoSA:
   `/data/zhanglt/MoSA_store/mesh/artifacts`), never to the canonical checkout.
 - A group worktree starts from `HEAD`; canonical uncommitted changes are not

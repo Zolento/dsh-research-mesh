@@ -17,7 +17,9 @@ checkout can be the project root itself.
    - shows whether this runtime can execute the repository or only register it
      read-only.
 4. Pick another route from the dropdown if needed.
-5. Click **关联**.
+5. Click **关联**. If this profile is configured for the repository, the plugin creates
+   the default control, worktrees and artifacts/store directories automatically.
+   It still does not create or modify RSI state.
 
 If the repository has no RSI state, the form does **not** invent one. It offers a
 copyable migration prompt instead.

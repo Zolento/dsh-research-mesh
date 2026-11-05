@@ -139,7 +139,8 @@ The current `web` profile is already the MoSA profile. You do not need to create
 2. Add the plugin.
 3. Set `projectRoot/sourceDir/controlDir/worktreesDir/artifactsDir`.
 4. Restart that profile on its own port.
-5. Open its Web UI and link the project (the RSI state is auto-detected).
+5. Open its Web UI and link the project. The RSI state is auto-detected and the
+   default control/worktrees/artifacts/store directories are created automatically.
 
 No Mesh group is created by profile setup. Do not copy the canonical checkout;
 use the existing repository and Mesh worktrees.

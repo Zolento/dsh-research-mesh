@@ -1,7 +1,8 @@
 /** Project registry, RSI validation and explicit session bindings. */
 
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeService, makeTempProject } from '../helpers/env.ts';
@@ -373,6 +374,27 @@ test('member identity is bound to its group and project', async () => {
   } finally {
     await service.close();
     project.cleanup();
+  }
+});
+
+test('attaching a runnable project initializes control, worktrees and store directories', async () => {
+  const project = makeTempProject();
+  const store = join(project.root, 'store');
+  const { service } = await makeService(project, { config: { artifactsDir: store } });
+  try {
+    const state = statePath(project.root);
+    const before = createHash('sha256').update(readFileSync(state)).digest('hex');
+    const created = service.createProject({ name: 'research', rsiStateRef: state, repositoryRef: project.source });
+    assert.equal(created.runnable, true);
+    assert.ok(existsSync(join(project.root, '.research-mesh')));
+    assert.ok(existsSync(join(project.root, 'worktrees')));
+    assert.ok(existsSync(store));
+    assert.ok(existsSync(join(store, 'artifacts')) || existsSync(store));
+    assert.equal(createHash('sha256').update(readFileSync(state)).digest('hex'), before);
+  } finally {
+    await service.close();
+    project.cleanup();
+    rmSync(store, { recursive: true, force: true });
   }
 });
 

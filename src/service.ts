@@ -41,7 +41,7 @@ import { ExperimentJobService } from './executors/job-service.ts';
 import { MeshWorker, type WorkerRoundResult, type WorkerStatus } from './worker.ts';
 import { nowIso } from './util/time.ts';
 import { findConsumeEvent } from './rsi/consumed-run.ts';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
 import { newWorkerId } from './util/ids.ts';
@@ -332,7 +332,53 @@ export class MeshService {
   // -- projects and sessions ------------------------------------------------
 
   createProject(input: CreateProjectInput): ProjectView {
-    return this.#requireProjects().create(input);
+    const project = this.#requireProjects().create(input);
+    if (project.runnable) {
+      // Attaching the canonical project is the setup step: create the Mesh
+      // control/worktree/artifact/store directories from runtime defaults.
+      try { this.initializeProjectRuntime(input.repositoryRef); } catch (error) {
+        this.#logger.warn('project runtime initialization failed', { projectId: project.projectId, error: String(error) });
+      }
+    }
+    return project;
+  }
+
+  /**
+   * Create the default Mesh directories for a runnable project. Never creates
+   * RSI state or modifies the canonical checkout.
+   * @param repositoryRef - project repository root.
+   * @returns created/confirmed paths.
+   */
+  initializeProjectRuntime(repositoryRef: string): {
+    readonly controlDir: string;
+    readonly worktreesDir: string;
+    readonly artifactsDir: string;
+    readonly storeDir: string | null;
+    readonly created: readonly string[];
+  } {
+    const inspection = this.#requireProjects().inspect(repositoryRef);
+    if (!inspection.runnable) {
+      throw new MeshError('CONFIG_INVALID', 'project is not runnable in this profile; use a web-<project> profile', {
+        repositoryRef,
+        configuredSourceDir: inspection.configuredSourceDir,
+      });
+    }
+    const created: string[] = [];
+    const ensure = (path: string): void => {
+      if (!existsSync(path)) { mkdirSync(path, { recursive: true, mode: 0o700 }); created.push(path); }
+    };
+    ensure(inspection.controlDir);
+    ensure(inspection.worktreesDir);
+    const config = this.#config;
+    ensure(config.artifactsDir);
+    const storeDir = config.artifactsDir.endsWith('/mesh/artifacts')
+      ? config.artifactsDir.slice(0, -'/mesh/artifacts'.length)
+      : null;
+    if (storeDir !== null) {
+      for (const child of ['checkpoints', 'results', 'archive_code']) ensure(`${storeDir}/${child}`);
+      ensure(`${storeDir}/mesh`);
+    }
+    return { controlDir: inspection.controlDir, worktreesDir: inspection.worktreesDir, artifactsDir: config.artifactsDir, storeDir, created };
   }
 
   /** Inspect a repository for the attach-project form without modifying it. */

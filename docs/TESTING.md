@@ -27,7 +27,7 @@ PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 98 tests after the harness audit, rc1 adaptation, live GPU/SSH/native runs, whole-repo onboarding, consumed coordinator/recovery and the follow-up defect fixes (85 unit + 8 integration + 5 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 99 tests after the harness audit, rc1 adaptation, live GPU/SSH/native runs, whole-repo onboarding, consumed coordinator/recovery, project auto-init and the follow-up defect fixes (86 unit + 8 integration + 5 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map

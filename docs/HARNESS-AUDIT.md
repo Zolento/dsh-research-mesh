@@ -231,7 +231,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 98 tests, 0 failures.
+- `npm run test:all` — 99 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push/deployment or upstream modification. Real localhost SSH and local GPU were exercised in [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).
