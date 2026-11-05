@@ -44,6 +44,11 @@ window.__ModuleLoader__.load({
         repositoryRoot: 'Git 仓库根目录',
         repositoryRootHint: '整个仓库就是项目根；Mesh 控制目录和 worktree 由插件管理。',
         chooseFolder: '选择文件夹',
+        fromWorkspace: '从已有 DSH 工作区选择',
+        chooseWorkspace: '选择一个工作区…',
+        workspaceHint: '使用 DSH 原生添加工作区窗口选择仓库，回到这里即可复用该路径。',
+        openAddWorkspace: '打开「添加工作区」',
+        addWorkspaceMissing: '没有找到「添加工作区」按钮；请从左侧工作区栏手动添加。',
         picking: '选择中…',
         inspect: '检测',
         pickerUnavailable: '当前 Web GUI 不提供目录浏览器，请直接输入绝对路径。',
@@ -505,95 +510,17 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function DirectoryBrowser({ ctx, t, startPath, onCancel, onChoose }) {
-      const [listing, setListing] = useState(null)
-      const [path, setPath] = useState(startPath ?? null)
-      const [selected, setSelected] = useState(null)
-      const [showHidden, setShowHidden] = useState(false)
-      const [loading, setLoading] = useState(true)
-      const [error, setError] = useState(null)
-      const load = async target => {
-        if (typeof ctx.uiWorkspace?.listDirectory !== 'function') {
-          setError(t('pickerUnavailable'))
-          setLoading(false)
-          return
-        }
-        setLoading(true)
-        setError(null)
-        try {
-          const result = await ctx.uiWorkspace.listDirectory(target)
-          setListing(result)
-          setPath(result.path)
-          setSelected(null)
-        } catch (failure) {
-          setError(String(failure?.message ?? failure))
-        } finally {
-          setLoading(false)
-        }
-      }
-      useEffect(() => { void load(startPath) }, [])
-      const crumbs = listing?.crumbs ?? []
-      const entries = (listing?.entries ?? []).filter(entry => showHidden || entry.hidden !== true)
-      const enter = entry => {
-        setSelected(entry.path)
-        void load(entry.path)
-      }
-      const createFolder = async () => {
-        const name = window.prompt(t('newFolderPrompt'))
-        if (name === null || name.trim() === '') return
-        try {
-          await ctx.uiWorkspace.createDirectory(path, name.trim())
-          await load(path)
-        } catch (failure) {
-          setError(String(failure?.message ?? failure))
-        }
-      }
-      const open = () => {
-        const chosen = selected ?? path
-        if (chosen !== null) onChoose(chosen)
-      }
-      const crumbRow = h('div', { className: 'mesh-browser-crumbs' },
-        crumbs.length === 0 ? h('span', { className: 'mesh-muted' }, t('homeDirectory')) : crumbs.map((crumb, index) =>
-          h('button', {
-            key: crumb.path, type: 'button', className: 'mesh-browser-crumb',
-            onClick: () => { void load(crumb.path) },
-          }, index === 0 ? t('homeDirectory') : crumb.name)))
-      const rows = entries.map(entry => h('button', {
-        key: entry.path,
-        type: 'button',
-        className: `mesh-browser-row${selected === entry.path ? ' selected' : ''}`,
-        onClick: () => setSelected(entry.path),
-        onDoubleClick: () => enter(entry),
-      },
-      h('span', { className: 'mesh-browser-folder', 'aria-hidden': 'true' }, h('svg', { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none' }, h('path', { d: 'M1.8 3.5h4.1l1.2 1.4h7.1v7.6H1.8z', stroke: 'currentColor', strokeWidth: 1.3, strokeLinejoin: 'round' }))),
-      h('span', { className: 'mesh-browser-name' }, entry.name),
-      h('span', { className: 'mesh-browser-chevron', 'aria-hidden': 'true' }, '›'),
-      h('span', { role: 'button', tabIndex: 0, className: 'mesh-browser-enter', onClick: event => { event.stopPropagation(); enter(entry) }, onKeyDown: event => { if (event.key === 'Enter') { event.stopPropagation(); enter(entry) } } }, t('openFolder'))))
-      return h('div', { className: 'mesh-browser-overlay' },
-        h('div', { className: 'mesh-browser-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('browseTitle') },
-          h('div', { className: 'mesh-browser-header' },
-            h('h2', null, t('browseTitle')),
-            crumbRow),
-          h('div', { className: 'mesh-browser-content' },
-            error === null ? null : h('div', { className: 'mesh-error', role: 'alert' }, error),
-            loading ? h('div', { className: 'mesh-browser-status' }, t('browserLoading'))
-              : rows.length === 0 ? h('div', { className: 'mesh-browser-status' }, t('browserEmpty'))
-                : h('div', { className: 'mesh-browser-list' }, ...rows)),
-          h('div', { className: 'mesh-browser-footer' },
-            h('button', { className: 'mesh-btn ghost', type: 'button', onClick: createFolder }, `+ ${t('newFolder')}`),
-            h('label', { className: 'mesh-browser-hidden' },
-              h('input', { type: 'checkbox', checked: showHidden, onChange: event => setShowHidden(event.target.checked) }),
-              t('showHidden')),
-            h('div', { className: 'mesh-browser-gap' }),
-            h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel')),
-            h('button', { className: 'mesh-btn primary', type: 'button', onClick: open, disabled: loading || path === null }, t('openFolder'))))
-      )
-    }
-
     function ProjectForm({ ctx, t, onCancel, onCreated }) {
       const [form, setForm] = useState({ name: '', rsiStateRef: '', repositoryRef: '', description: '' })
       const [inspection, setInspection] = useState(null)
-      const [browserOpen, setBrowserOpen] = useState(false)
+      const [workspaceItems, setWorkspaceItems] = useState([])
+      useEffect(() => {
+        const source = ctx.workspaces?.list
+        if (source === undefined || typeof source.getSnapshot !== 'function') return undefined
+        const update = () => setWorkspaceItems(source.getSnapshot().items ?? [])
+        update()
+        return typeof source.subscribe === 'function' ? source.subscribe(update) : undefined
+      }, [])
       const [busy, setBusy] = useState(false)
       const [picking, setPicking] = useState(false)
       const [error, setError] = useState(null)
@@ -620,15 +547,20 @@ window.__ModuleLoader__.load({
           setError(failure.message)
         }
       }
-      const pick = () => {
-        // Use the same in-page listing primitive and visual language as the
-        // Workspace add flow. Never invoke the Host-native picker on Web.
-        setBrowserOpen(true)
-      }
-      const chooseBrowserPath = async path => {
-        setBrowserOpen(false)
-        set('repositoryRef', path)
-        await inspectPath(path)
+      const openAddWorkspace = () => {
+        onCancel()
+        window.setTimeout(() => {
+          const buttons = Array.from(document.querySelectorAll('button'))
+          const target = buttons.find(button => {
+            const label = button.getAttribute('aria-label') ?? button.getAttribute('title') ?? ''
+            return /添加工作区|Add workspace/i.test(label)
+          })
+          if (target === undefined) {
+            window.alert(t('addWorkspaceMissing'))
+            return
+          }
+          target.click()
+        }, 100)
       }
       const migrationPrompt = inspection === null
         ? ''
@@ -695,9 +627,24 @@ window.__ModuleLoader__.load({
                   onChange: event => set('repositoryRef', event.target.value),
                   onBlur: event => { if (inspection === null) void inspectPath(event.target.value) },
                 }),
-                h('button', { className: 'mesh-btn ghost', type: 'button', onClick: pick }, t('chooseFolder')),
                 h('button', { className: 'mesh-btn ghost', type: 'button', onClick: () => inspectPath(form.repositoryRef) }, t('inspect'))),
               h('div', { className: 'mesh-muted' }, t('repositoryRootHint'))),
+            h('label', { className: 'mesh-field' }, t('fromWorkspace'),
+              h('select', {
+                className: 'mesh-input mesh-select mesh-workspace-select',
+                value: '',
+                onChange: async event => {
+                  const path = event.target.value
+                  if (path === '') return
+                  set('repositoryRef', path)
+                  await inspectPath(path)
+                },
+              },
+              h('option', { value: '' }, t('chooseWorkspace')),
+              ...workspaceItems.map(workspace => h('option', { key: workspace.workspaceId, value: workspace.path }, `${workspace.title} — ${workspace.path}`)))),
+            h('div', { className: 'mesh-actions' },
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: openAddWorkspace }, t('openAddWorkspace')),
+              h('span', { className: 'mesh-muted' }, t('workspaceHint'))),
             h('label', { className: 'mesh-field' }, t('name'),
               h('input', { className: 'mesh-input', required: true, value: form.name, onChange: event => set('name', event.target.value) })),
             status,
@@ -712,11 +659,7 @@ window.__ModuleLoader__.load({
               h('textarea', { className: 'mesh-input', rows: 3, value: form.description, onChange: event => set('description', event.target.value) })),
             h('div', { className: 'mesh-actions' },
               h('button', { className: 'mesh-btn primary', type: 'submit', disabled: busy || inspection?.migrationRequired === true }, busy ? t('saving') : t('create')),
-              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel'))))),
-        browserOpen ? h(DirectoryBrowser, {
-          ctx, t, startPath: form.repositoryRef.trim() === '' ? undefined : form.repositoryRef.trim(),
-          onCancel: () => setBrowserOpen(false), onChoose: chooseBrowserPath,
-        }) : null)
+              h('button', { className: 'mesh-btn ghost', type: 'button', onClick: onCancel }, t('cancel'))))))
     }
 
     function ProjectsPage({ ctx, onOpen, t, onModels }) {

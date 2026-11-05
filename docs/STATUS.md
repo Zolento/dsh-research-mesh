@@ -32,7 +32,7 @@ Commit: `0a69688` (rc1 adaptation); prior audit commits `35ca703`, `9a7c757`, `4
 DSH rc1 adaptation: [DSH-0.2.2-rc1.md](DSH-0.2.2-rc1.md).
 Live local GPU scenario: [LIVE-GPU-SCENARIO.md](LIVE-GPU-SCENARIO.md).
 Live SSH + native-member scenario: [LIVE-SSH-NATIVE.md](LIVE-SSH-NATIVE.md).
-Project onboarding / whole-repo attach: [PROJECT-ONBOARDING.md](PROJECT-ONBOARDING.md).
+Project onboarding / whole-repo attach (native Add-workspace flow): [PROJECT-ONBOARDING.md](PROJECT-ONBOARDING.md).
 
 Group-control audit (destroyed-group quota, project pause drift, Captain rollback,
 member binding ownership, GPU double-lease, artifact ingestion, remote retry):

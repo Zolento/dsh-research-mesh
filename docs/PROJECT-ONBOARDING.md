@@ -6,9 +6,10 @@ checkout can be the project root itself.
 ## UI flow
 
 1. Open **Research Mesh → 关联研究项目**.
-2. Click **选择文件夹**. The in-page dialog mirrors the Workspace add dialog
-   (host directory listing, New folder, hidden-file toggle, Open/Cancel); pick
-   the repository root.
+2. Use **打开「添加工作区」** (or the sidebar **+ 添加工作区**) to open DSH's
+   native Add-workspace window and pick the repository root. The plugin does not
+   reimplement or override that host dialog; after the workspace exists, choose
+   it from **从已有 DSH 工作区选择**.
 3. The plugin calls `POST /projects/inspect` and:
    - verifies the path is a Git checkout;
    - discovers `.research-idea-pipeline/routes/*/research-state.json`;
@@ -62,6 +63,8 @@ The plugin creates only Mesh control directories and worktrees. A canonical
 `research-state.json` must come from the RSI workflow; the UI rejects a state
 without `state_version`.
 
-The **选择文件夹** button never invokes the Host-native picker. It uses
-`uiWorkspace.listDirectory()` — the same remote browsing primitive as the
-Workspace add flow — so the chooser always renders inside the Web page.
+The previous custom chooser was removed. The plugin now reuses the DSH
+Workspace registry: users pick a repository in the native Add-workspace window,
+then the project form selects that workspace path. This keeps the exact host UI
+without a third-party modal. The typed absolute-path field remains for
+automation.
