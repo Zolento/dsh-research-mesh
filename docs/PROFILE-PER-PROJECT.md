@@ -50,6 +50,29 @@ Each profile has its own:
 
 ## Create a profile
 
+### Initialization semantics
+
+- `dsh --profile <new> web` does **not** create a profile; it fails with
+  `profile "<new>" does not exist`.
+- `dsh --profile <new> --from-default-profile web --dump-config` explicitly
+  creates the profile from the shipped **web** template. It **replaces** an
+  existing profile of that name, including its user layer, model settings and
+  plugins. Use it only when the profile does not exist.
+- `dsh plugin --profile <new> add <package>` initializes a missing profile, but
+  with the default bundle set, **not** the web template. Create the web profile
+  first, then add the plugin.
+- Once created, booting the same profile reuses it; it is not reinitialized.
+
+Safe creation:
+
+```bash
+if [ -e "$HOME/.dsh/profiles/web-3dzssl" ]; then
+  echo "profile already exists; do not pass --from-default-profile"
+else
+  dsh --profile web-3dzssl --from-default-profile web --dump-config
+fi
+```
+
 Example for a second project:
 
 ```bash
