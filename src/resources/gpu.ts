@@ -7,6 +7,7 @@
  * is configured the manager fails closed and the task stays blocked.
  */
 
+import { execFileSync } from 'node:child_process';
 import { MeshError } from '../errors.ts';
 import type { MeshConfig, WorkerConfig } from '../config/types.ts';
 import { MeshStore } from '../storage/mesh-store.ts';
@@ -32,6 +33,45 @@ export interface GpuProbe {
 export class UnknownGpuProbe implements GpuProbe {
   async probe(): Promise<GpuAvailability> {
     return 'unknown';
+  }
+}
+
+/** Local NVIDIA probe for a local (fake-remote-root) worker. */
+export class LocalGpuProbe implements GpuProbe {
+  readonly #command: string;
+
+  /**
+   * @param command - nvidia-smi executable (injectable only for tests).
+   */
+  constructor(command = 'nvidia-smi') {
+    this.#command = command;
+  }
+
+  /**
+   * Query nvidia-smi without a shell. Missing tools/devices fail closed.
+   * @param worker - worker configuration.
+   * @param gpuId - device id.
+   * @returns availability.
+   */
+  async probe(worker: WorkerConfig, gpuId: number): Promise<GpuAvailability> {
+    if (!worker.gpuIds.includes(gpuId)) return 'unknown';
+    try {
+      const raw = execFileSync(this.#command, [
+        '--query-gpu=index,memory.used,memory.total',
+        '--format=csv,noheader,nounits',
+      ], { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const line of raw.split('\n')) {
+        const [index, used, total] = line.split(',').map(part => part.trim());
+        if (Number(index) !== gpuId) continue;
+        const usedMiB = Number(used);
+        const totalMiB = Number(total);
+        if (!Number.isFinite(usedMiB) || !Number.isFinite(totalMiB) || totalMiB <= 0) return 'unknown';
+        return usedMiB / totalMiB >= 0.9 ? 'busy' : 'available';
+      }
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 }
 

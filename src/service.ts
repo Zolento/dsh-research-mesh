@@ -31,7 +31,7 @@ import {
 } from './teams/models.ts';
 import { DshModelCatalog, StaticModelCatalog, type DshLlmLike } from './dsh/model-catalog.ts';
 import { TaskScheduler, type ClaimedTask, type MeshTaskView, type SchedulerRecoveryReport, type SubmitTaskInput } from './scheduler/scheduler.ts';
-import { GpuLeaseManager, UnknownGpuProbe, type GpuProbe } from './resources/gpu.ts';
+import { GpuLeaseManager, LocalGpuProbe, UnknownGpuProbe, type GpuProbe } from './resources/gpu.ts';
 import { RsiAdapter, type RsiDiscovery, type RsiStateCheck } from './rsi/adapter.ts';
 import { LocalExecutor } from './executors/local.ts';
 import { RemoteJobExecutor, type IngestionResult, type SubmitResult } from './executors/remote.ts';
@@ -44,6 +44,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
 import { newWorkerId } from './util/ids.ts';
+import { canonicalStatePath, readCanonicalStateFile } from './bridge/adapters/research-pipeline.ts';
 
 /** Host services the plugin optionally binds to. */
 export interface MeshHostServices {
@@ -619,6 +620,16 @@ export class MeshService {
         status: project.status,
       });
     }
+    const routeStatePath = input.researchStatePath ?? canonicalStatePath(this.#config.projectRoot, input.routeId);
+    const routeState = readCanonicalStateFile(routeStatePath);
+    if (!routeState.exists || routeState.version === null) {
+      throw new MeshError('RSI_STATE_UNAVAILABLE', 'the group research route has no readable RSI state', {
+        projectId: input.projectId,
+        routeId: input.routeId,
+        statePath: routeStatePath,
+        error: routeState.error,
+      });
+    }
     return this.createTeam(input);
   }
 
@@ -1056,6 +1067,7 @@ export class MeshService {
 
   #createGpuProbe(transport: import('./executors/transport.ts').JobTransport): GpuProbe {
     if (transport instanceof SshTransport) return new SshGpuProbe(transport);
+    if (transport instanceof FakeTransport) return new LocalGpuProbe();
     return new UnknownGpuProbe();
   }
 

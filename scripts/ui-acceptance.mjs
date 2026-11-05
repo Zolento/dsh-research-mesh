@@ -41,6 +41,11 @@ function prepareProject() {
   const route = join(project, '.research-idea-pipeline', 'routes', 'A');
   mkdirSync(route, { recursive: true });
   execFileSync('cp', [join(SKILL, 'templates', 'research-state.template.json'), join(route, 'research-state.json')]);
+  for (const routeId of ['B', 'C']) {
+    const other = join(project, '.research-idea-pipeline', 'routes', routeId);
+    mkdirSync(other, { recursive: true });
+    execFileSync('cp', [join(route, 'research-state.json'), join(other, 'research-state.json')]);
+  }
   const conda = join(tmp, 'fake-conda');
   writeFileSync(conda, '#!/usr/bin/env bash\nset -euo pipefail\nif [ "${1:-}" = "run" ]; then shift; while [ $# -gt 0 ]; do case "$1" in -n) shift 2 ;; --no-capture-output) shift ;; *) break ;; esac; done; fi\nexec "$@"\n');
   chmodSync(conda, 0o755);

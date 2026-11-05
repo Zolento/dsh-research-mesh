@@ -249,6 +249,28 @@ test('a project whose RSI state disappeared cannot create an orphan group', asyn
   }
 });
 
+test('API group creation requires a readable RSI state for its research route', async () => {
+  const project = makeTempProject();
+  const { service } = await makeService(project);
+  try {
+    const stateA = statePath(project.root);
+    const created = service.createProject({ name: 'research', rsiStateRef: stateA, repositoryRef: project.source });
+    await assert.rejects(
+      () => service.createGroup({ projectId: created.projectId, routeId: 'B', name: 'group-b' }),
+      (error: unknown) => error instanceof MeshError && error.code === 'RSI_STATE_UNAVAILABLE',
+    );
+    assert.equal(service.listTeams(created.projectId).length, 0);
+    const routeB = join(project.root, '.research-idea-pipeline', 'routes', 'B');
+    mkdirSync(routeB, { recursive: true });
+    copyFileSync(stateA, join(routeB, 'research-state.json'));
+    const groupB = await service.createGroup({ projectId: created.projectId, routeId: 'B', name: 'group-b', rootSessionId: 'root-b' });
+    assert.equal(groupB.name, 'group-b');
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
+
 test('a group whose Captain binding fails is retired, not left half-bound', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project, { sessionBinding: 'external' });

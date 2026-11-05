@@ -139,6 +139,13 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
   (`captain: inherit`, no default); a group with overrides but no default is
   rejected. Config-backed reads observe a newer volatile revision instead of
   serving an indefinitely stale cache.
+- **Group route state:** the API now rejects a group whose research route has no
+  readable canonical RSI state; live testing found a route-B group with no
+  `routes/B/research-state.json` was previously accepted as an empty shell.
+- **Local GPU probe:** fake-transport local execution originally used
+  `UnknownGpuProbe`, so a real local GPU run failed closed. A non-shell
+  `nvidia-smi` probe now supports the gated fake transport; SSH keeps
+  `SshGpuProbe`.
 - **State path escape:** group creation canonicalizes the RSI state path and
   rejects lexical or symlink escapes outside `projectRoot`; group creation also
   rejects a project whose RSI state is no longer readable.
@@ -167,6 +174,8 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 - terminal task clears group `currentTaskId`
 - one task cannot hold two GPU leases
 - unknown project cannot create a group through the API
+- group route without canonical RSI state is rejected
+- local GPU probe parses available/busy/unknown and fails closed
 - remote nonzero exit ends FAILED, never READY for automatic resubmission
 - released member can be re-registered without a primary-key conflict
 - Captain session cannot be registered as a member
@@ -190,7 +199,7 @@ unknowable enter `RECONCILE_REQUIRED`, not `FAILED`.
 ## Verification
 
 - `npm run typecheck` — pass.
-- `npm run test:all` — 75 tests, 0 failures.
+- `npm run test:all` — 77 tests, 0 failures.
 - `node scripts/ui-acceptance.mjs` — real isolated DSH web profile + Chrome CDP,
   pass; all screenshots regenerated.
 - No push, deployment, real SSH, real GPU, or upstream modification.

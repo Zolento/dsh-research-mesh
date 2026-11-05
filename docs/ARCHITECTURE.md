@@ -58,6 +58,10 @@ project's `.research-idea-pipeline/routes/<R>/` and is read-only to Mesh.
 - The client session header/hero subscribes to `/session` through a shared cache and
   renders the project entry only for a bound session.
 
+Fake-transport local execution uses a local `nvidia-smi` probe; it is gated by
+`allowFakeTransport` and is not a host-wide GPU lock. Production SSH uses the
+remote probe.
+
 ## Scheduling and execution
 
 `TaskScheduler` uses `BEGIN IMMEDIATE` plus bridge task-revision compare-and-set for

@@ -112,3 +112,30 @@ test('recovery releases leases for terminal tasks before reassignment', async ()
     project.cleanup();
   }
 });
+
+test('local GPU probe parses nvidia-smi and fails closed on missing devices or tools', async () => {
+  const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LocalGpuProbe } = await import('../../src/resources/gpu.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'mesh-gpu-probe-'));
+  try {
+    const free = join(dir, 'free-smi');
+    writeFileSync(free, '#!/bin/sh\nprintf "0, 200, 16000\\n"\n');
+    chmodSync(free, 0o700);
+    const probe = new LocalGpuProbe(free);
+    const worker = {
+      workerId: 'workstation', transport: 'fake', enabled: true, gpuIds: [0, 1], maxGpuJobs: 1,
+      condaEnvironment: 'research', fakeRemoteRoot: dir,
+    } as const;
+    assert.equal(await probe.probe(worker as never, 0), 'available');
+    assert.equal(await probe.probe(worker as never, 1), 'unknown');
+    const busy = join(dir, 'busy-smi');
+    writeFileSync(busy, '#!/bin/sh\nprintf "0, 15000, 16000\\n"\n');
+    chmodSync(busy, 0o700);
+    assert.equal(await new LocalGpuProbe(busy).probe(worker as never, 0), 'busy');
+    assert.equal(await new LocalGpuProbe(join(dir, 'missing-smi')).probe(worker as never, 0), 'unknown');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -27,8 +27,8 @@ PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 75 tests after the group-control harness audit and rc1 adaptation
-(65 unit + 6 integration + 4 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 77 tests after the group-control harness audit, rc1 adaptation and live GPU run
+(67 unit + 6 integration + 4 end-to-end). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
@@ -115,6 +115,13 @@ Fault B — partial artifact transfer:
     `mock/mock-flash`;
   - creates a control discussion, verifies its binding and project entry.
 - exits nonzero on any assertion; screenshots are written to `docs/screenshots/`.
+
+## Live local GPU scenario
+
+See [LIVE-GPU-SCENARIO.md](LIVE-GPU-SCENARIO.md) for a real 2-group × 2-subagent
+run against the API Pool `deepseek-pool/deepseek-flash` route, local conda `torch`
+and GPU 0. It records the test-stub/RSI and fake-SSH boundaries as well as the
+route-state and local-GPU-probe fixes.
 
 ## DSH 0.2.2-rc.1 adaptation evidence
 
