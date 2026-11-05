@@ -19,6 +19,7 @@ worktrees, tasks, remote jobs and the control surface.
 - Attaching an existing whole Git repository: [`docs/PROJECT-ONBOARDING.md`](docs/PROJECT-ONBOARDING.md)
 - MoSA migration without a 9.3 GB copy: [`docs/MOSA-MESH-MIGRATION.md`](docs/MOSA-MESH-MIGRATION.md)
 - Canonical checkout + Mesh worktree operating rules: [`docs/MESH-OPERATING-RULES.md`](docs/MESH-OPERATING-RULES.md)
+- Development/contract guard: [`AGENTS.md`](AGENTS.md)
 
 ## What is implemented
 

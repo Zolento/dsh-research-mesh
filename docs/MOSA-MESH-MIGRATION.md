@@ -72,6 +72,7 @@ Large data/checkpoints must stay symlinked; never duplicate them.
 
 This section is now present in the canonical MoSA `AGENTS.md` as §11, and the
 plugin enforcement is documented in [MESH-OPERATING-RULES.md](MESH-OPERATING-RULES.md).
+The shared contract id is `dsh-research-mesh/mesh-collaboration@1`.
 
 Add this to the project's `AGENTS.md` (canonical or the worktree copy):
 

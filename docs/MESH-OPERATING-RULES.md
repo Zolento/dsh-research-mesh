@@ -1,5 +1,7 @@
 # Canonical checkout + Mesh worktrees
 
+**Collaboration contract:** `dsh-research-mesh/mesh-collaboration@1`.
+
 This is the operating contract implemented by the plugin for a whole-repository
 RSI project such as MoSA.
 
