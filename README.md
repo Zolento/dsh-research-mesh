@@ -68,6 +68,18 @@ npm run test:all
 node scripts/ui-acceptance.mjs
 ```
 
+If a linked checkout boots with
+`Cannot find package '@deepseek-ai/schemastery'`, its local dependency link is
+stale (usually after removing a temporary DSH install). From the checkout:
+
+```bash
+node scripts/link-toolchain.mjs
+node scripts/check-dsh.mjs
+```
+
+Then restart the profile. Do not fix this by copying a package into the DSH
+global tree.
+
 Install into a profile:
 
 ```bash

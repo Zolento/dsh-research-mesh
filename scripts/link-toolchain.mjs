@@ -8,7 +8,7 @@
  * them as normal dependencies.
  */
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -21,6 +21,9 @@ mkdirSync(join(nodeModules, '.bin'), { recursive: true });
 
 const candidates = [
   process.env.DSH_INSTALL,
+  // Prefer the DSH global install for the Node running this script. The old
+  // hard-coded v22 path may have been removed after a Node upgrade.
+  join(dirname(process.execPath), '..', 'lib', 'node_modules', '@deepseek-ai', 'dsh'),
   '/home/lenovo/.nvm/versions/node/v22.23.2/lib/node_modules/@deepseek-ai/dsh',
   join(homedir(), '.nvm', 'versions', 'node', process.version, 'lib', 'node_modules', '@deepseek-ai', 'dsh'),
 ].filter((value) => value !== undefined && value !== "");
@@ -33,7 +36,10 @@ const requireFromInstall = createRequire(join(install, 'package.json'));
 
 function link(name, target) {
   const linkPath = join(nodeModules, name);
-  rmSync(linkPath, { recursive: true, force: true });
+  try {
+    if (lstatSync(linkPath).isSymbolicLink()) unlinkSync(linkPath);
+    else rmSync(linkPath, { recursive: true, force: true });
+  } catch { /* absent */ }
   symlinkSync(target, linkPath, 'dir');
   console.log(`linked ${name} -> ${target}`);
 }
