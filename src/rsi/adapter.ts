@@ -16,6 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative as relativePath } from 'node:path';
 import { MeshError } from '../errors.ts';
@@ -116,9 +117,39 @@ function fileSha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function rsiDigest(value: unknown): string {
-  const plain: unknown = JSON.parse(JSON.stringify(value));
-  return sha256Text(canonicalJson(plain as CanonicalValue));
+/**
+ * RLP's authoritative content digest.
+ *
+ * RLP seals every receipt with `evidence_outcome.digest`, i.e. Python's
+ * `json.dumps(sort_keys=True, ensure_ascii=False, separators=(',', ':'))`.
+ * JavaScript's number formatting differs (`1e-9` vs Python's `1e-09`), so a
+ * local re-serialisation can disagree on byte-identical semantics. Mesh
+ * therefore asks RLP itself to compute the digest; a failure is fatal rather
+ * than silently falling back to a digest that might not match the seal.
+ */
+function rlpDigest(python: string, skillPath: string, value: unknown): string {
+  const script = [
+    'import json, sys',
+    `sys.path.insert(0, ${JSON.stringify(join(skillPath, 'scripts'))})`,
+    'import evidence_outcome as eo',
+    'print(eo.digest(json.load(sys.stdin)))',
+  ].join('\n');
+  try {
+    const out = execFileSync(python, ['-c', script], {
+      input: JSON.stringify(value),
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 8 * 1024 * 1024,
+    }).trim();
+    if (!/^[a-f0-9]{64}$/.test(out)) {
+      throw new Error(`unexpected digest output: ${out.slice(0, 80)}`);
+    }
+    return out;
+  } catch (error) {
+    throw new MeshError('RSI_INVALID', 'cannot compute the RLP content digest', {
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function extractStateVersion(json: Readonly<Record<string, unknown>>): string | null {
@@ -336,7 +367,7 @@ export class RsiAdapter {
     const receiptId = typeof receipt.id === 'string' ? receipt.id : '';
     if (receiptId === '') throw new MeshError('RSI_AUTHORIZATION_INVALID', 'receipt has no id');
     const manifest = this.#readObject(manifestPath, 'manifest');
-    const manifestDigest = rsiDigest(manifest);
+    const manifestDigest = this.#digest(manifest);
     const binding = receipt.binding;
     if (typeof binding !== 'object' || binding === null || Array.isArray(binding)) {
       throw new MeshError('RSI_AUTHORIZATION_INVALID', 'receipt has no binding');
@@ -348,10 +379,11 @@ export class RsiAdapter {
         actual: manifestDigest,
       });
     }
-    if (bindingRecord.state_digest !== rsiDigest(state.json)) {
+    const stateDigest = this.#digest(state.json);
+    if (bindingRecord.state_digest !== stateDigest) {
       throw new MeshError('RSI_STATE_CHANGED', 'canonical state changed since the receipt was issued', {
         receiptStateDigest: bindingRecord.state_digest,
-        currentStateDigest: rsiDigest(state.json),
+        currentStateDigest: stateDigest,
       });
     }
     this.#verifyBoundFiles(manifest, bindingRecord);
@@ -398,7 +430,7 @@ export class RsiAdapter {
     }
     // Verify the scheduler content that the receipt bound.
     const scheduler = this.#readObject(schedulerPath, 'scheduler');
-    if (receipt.scheduler_digest !== undefined && receipt.scheduler_digest !== rsiDigest(scheduler)) {
+    if (receipt.scheduler_digest !== undefined && receipt.scheduler_digest !== this.#digest(scheduler)) {
       throw new MeshError('RSI_AUTHORIZATION_INVALID', 'scheduler content changed since the receipt was issued');
     }
     this.#logger.info('RSI consumed receipt verified', { receiptId, experimentId: input.experimentId, stateVersion: state.version });
@@ -481,13 +513,21 @@ export class RsiAdapter {
       receiptDigest: createHash('sha256').update(receiptRaw).digest('hex'),
       experimentId: input.experimentId,
       stateVersion: after.version,
-      rsiManifestDigest: rsiDigest(this.#readObject(manifestPath, 'manifest')),
+      rsiManifestDigest: this.#digest(this.#readObject(manifestPath, 'manifest')),
       verifiedBy: 'rsi.experiment_execute.run.preview(test-only)',
       verifiedAt: nowIso(),
     };
   }
 
   // -- internals -----------------------------------------------------------
+
+  #digest(value: unknown): string {
+    const discovery = this.discover();
+    if (!discovery.available || discovery.skillPath === null) {
+      throw new MeshError('RSI_UNAVAILABLE', discovery.error ?? 'RLP skill is unavailable for digesting');
+    }
+    return rlpDigest(this.#config.rsi.pythonExecutable, discovery.skillPath, value);
+  }
 
   #pipelineOrThrow(): ResearchPipelineAdapter {
     const discovery = this.discover();

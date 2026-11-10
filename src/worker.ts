@@ -20,7 +20,7 @@ import type { WorkspaceManager } from './workspaces/manager.ts';
 import type { LocalExecutor } from './executors/local.ts';
 import type { ExperimentJobService } from './executors/job-service.ts';
 import type { RsiAdapter } from './rsi/adapter.ts';
-import { runConsumedShim } from './rsi/consumed-run.ts';
+import { findConsumeEvent, runConsumedShim } from './rsi/consumed-run.ts';
 import { dirname, join } from 'node:path';
 import type { IngestionResult } from './executors/remote.ts';
 
@@ -162,7 +162,20 @@ export class MeshWorker {
       this.#lastError = `${meshError.code}: ${meshError.message}`;
       this.#logger.error('worker task failed', { taskId: started.taskId, code: meshError.code, message: meshError.message, details: meshError.details });
       try {
-        this.#scheduler.fail(started.taskId, claim.attemptId, meshError.code, meshError.message, meshError.code !== 'MANIFEST_INVALID');
+        if (this.#receiptSpent(started)) {
+          // The RLP receipt was consumed even though the Mesh job was not
+          // confirmed. Retrying would spend the budget twice, so the task parks
+          // for reconciliation instead of returning to the ready queue.
+          this.#scheduler.markRemote(started.taskId, 'RECONCILE_REQUIRED', {
+            errorCode: meshError.code,
+            errorMessage: `${meshError.message} (RSI receipt already consumed; reconcile, never rerun)`,
+          });
+          this.#store.appendEvent('task', started.taskId, 'receipt-consumed-no-job', {
+            code: meshError.code,
+          });
+        } else {
+          this.#scheduler.fail(started.taskId, claim.attemptId, meshError.code, meshError.message, meshError.code !== 'MANIFEST_INVALID');
+        }
       } catch (failError) {
         this.#logger.error('worker could not record task failure', { taskId: started.taskId, error: String(failError) });
       }
@@ -293,6 +306,27 @@ export class MeshWorker {
         `local task exited ${String(result.exitCode)}; logs: ${result.logDir}`,
         true,
       );
+    }
+  }
+
+  /**
+   * Whether this experiment task already spent its RLP receipt.
+   *
+   * The consumed-shim path appends a `consume` event before the Mesh job is
+   * confirmed. Any failure after that point must not be retried.
+   * @param task - the started task view.
+   * @returns true when a `consume` event exists for this task's receipt.
+   */
+  #receiptSpent(task: MeshTaskView): boolean {
+    const payload = task.payload as Partial<ExperimentTaskPayload>;
+    const rsi = payload.rsi;
+    if (task.type !== 'experiment' || rsi === undefined) return false;
+    try {
+      const ledgerPath = rsi.ledgerPath ?? join(dirname(rsi.statePath), '.execution');
+      const receiptId = this.#readReceiptId(rsi.receiptPath);
+      return findConsumeEvent(ledgerPath, receiptId, rsi.experimentId) !== undefined;
+    } catch {
+      return false;
     }
   }
 

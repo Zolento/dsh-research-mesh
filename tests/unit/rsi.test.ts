@@ -1,6 +1,7 @@
 /** RSI adapter: discovery, read-only validators, receipt preview and consume proof. */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +9,9 @@ import { test } from 'node:test';
 import { makeConfig, makeTempProject } from '../helpers/env.ts';
 import { buildRsiFixture } from '../helpers/rsi.ts';
 import { MeshError } from '../../src/errors.ts';
+import { sha256Text } from '../../src/util/hash.ts';
+import { canonicalJson } from '../../src/util/canonical-json.ts';
+import { discoverRsiSkill } from '../../src/rsi/adapter.ts';
 import { RsiAdapter } from '../../src/rsi/adapter.ts';
 import { createLogger } from '../../src/util/logger.ts';
 
@@ -139,4 +143,27 @@ test('preview is forbidden unless the test stub flag is explicit', async () => {
   } finally {
     project.cleanup();
   }
+});
+
+test('the receipt digest is computed by RLP, not by a local re-serialisation', () => {
+  // RLP seals receipts with Python's json.dumps float formatting (`1e-09`);
+  // JavaScript would write `1e-9` and produce a different sha256. The adapter
+  // must therefore obtain the digest from the skill itself.
+  const value = { lr: 1e-9, nested: { a: [1.5e-7, 2] }, text: 'x' };
+  const skill = discoverRsiSkill(SKILL);
+  const python = process.env.RLP_PYTHON ?? 'python3';
+  const script = [
+    'import json, sys',
+    `sys.path.insert(0, ${JSON.stringify(join(SKILL, 'scripts'))})`,
+    'import evidence_outcome as eo',
+    'print(eo.digest(json.load(sys.stdin)))',
+  ].join('\n');
+  const expected = (execFileSync(python, ['-c', script], { input: JSON.stringify(value), encoding: 'utf8' })).trim();
+  const local = (() => {
+    const plain = JSON.parse(JSON.stringify(value));
+    return sha256Text(canonicalJson(plain as never));
+  })();
+  assert.match(expected, /^[a-f0-9]{64}$/);
+  assert.notEqual(expected, local, 'the two serialisations must be shown to differ for 1e-9');
+  assert.equal(skill.available, true);
 });
