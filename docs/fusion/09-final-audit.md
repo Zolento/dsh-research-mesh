@@ -25,8 +25,8 @@
    means "auto" mode does not yet produce an autonomous execution loop.
 2. **RLP Bootstrap is not invoked.** Mesh registers an existing READY checkout;
    creating a new RLP project remains an RLP operation.
-3. **UI acceptance not run** on this branch; the Tickets panel reuses existing
-   classes and passes a syntax check only.
+3. **UI acceptance passed**, but the Tickets action buttons are not exercised by
+   that script; they are covered by unit/integration tests only.
 4. **One runnable project per profile** is unchanged; multi-project still needs
    multiple profiles and ports.
 5. **No live RLP `run --execute` round trip** in this environment; the shim and
@@ -38,7 +38,7 @@
 
 Not yet a production release:
 
-- run `node scripts/ui-acceptance.mjs` on an isolated profile;
+- ~~run `node scripts/ui-acceptance.mjs` on an isolated profile~~ (passed 2026-11-10);
 - exercise one live consumed-ledger job against a scratch project;
 - decide the Ticket → Captain dispatch mechanism.
 
@@ -60,4 +60,10 @@ root/skill.
 
 ## 5. Local commit
 
-See `git log -1` on `feat/rlp-v2.2-fusion`; nothing pushed.
+- Branch: `feat/rlp-v2.2-fusion`
+- `feat(mesh): integrate RLP v2.2.0 and the autonomy ticket layer`
+- `test(mesh): pass the isolated UI acceptance on RLP v2.2.0`
+
+(exact hashes: `git log --oneline main..HEAD`)
+- Base: `6479734` (`main`, `origin/main` + 1 local commit)
+- Nothing was pushed, merged, tagged or deployed.

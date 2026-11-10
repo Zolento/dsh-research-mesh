@@ -12,6 +12,8 @@ node scripts/check-dsh.mjs
 # check-dsh: installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
 # check-dsh: @deepseek-ai/schemastery 3.19.0; PASS
 node --check client/client.js   # PASS
+node scripts/ui-acceptance.mjs  # PASS (isolated profile, headless Chrome)
+# {"ok":true,"teams":3,"screenshots":[11 files],"tokenUsed":true}
 ```
 
 ## 2. Counts
@@ -44,10 +46,10 @@ consumed ledger; artifact SHA-256; restart/reconcile; web API; client bundle.
 
 ## 5. Known untested / not run
 
-1. **Real Web UI acceptance** (`scripts/ui-acceptance.mjs`) was not run in this
-   round: it boots an isolated DSH profile and headless Chrome and takes several
-   minutes. The bundle syntax check passed; the Tickets section reuses existing
-   classes. Run it before a release tag.
+1. **Real Web UI acceptance** passed on an isolated profile: project, three
+   groups, Captain/member sessions, model settings, dark mode and responsive
+   overflow checks. The Tickets stop/resume buttons are not clicked by the
+   script (they are covered by unit/integration tests).
 2. **Real SSH / GPU / Conda** execution is unchanged from v0.1.0 and remains
    verified only by the recorded `LIVE-*` scenarios.
 3. **Real RLP `run --execute` shim round trip** is still covered by unit-level
@@ -66,3 +68,5 @@ consumed ledger; artifact SHA-256; restart/reconcile; web API; client bundle.
 | autonomy effects test red | test clock ahead of wall-clock row | test advances the injected clock |
 | `RlpContextAdapter` packet check red | `verify` output has no `is_canonical_state` | adapter asserts from the packet file |
 | `MANDATE_REVALIDATION_REQUIRED` missing | new failure code not declared | added to `MeshErrorCode` |
+| UI acceptance: "mock catalog did not register" | mock adapter hardcoded a stale global DSH install and could not import `@deepseek-ai/dsh-llm` | adapter now resolves the running DSH (PATH symlink → real package) with `DSH_INSTALL` override |
+| UI acceptance: catalog empty on first request | rc1 activates `llm` after the plugin | acceptance polls `/bootstrap` until the catalog appears |

@@ -59,10 +59,21 @@ override, explicit provider/model, no fallback. RLP-specific settings are
 deliberately minimal: `rlp.skillPath` (optional), `rlp.autonomyMode`,
 `rlp.autonomyPolicyVersion`. No scientific knob is exposed in the UI.
 
-## 6. Not in this version
+## 6. Verification
+
+`node scripts/ui-acceptance.mjs` passed on an isolated `DSH_HOME` and profile
+(port 3311, headless Chrome): project creation, three groups, Captain/member
+sessions, model settings persistence, dark appearance, and no horizontal
+overflow at 1440 / 1280 / 768 / 390. The Workbench capture now includes the
+Tickets section (`docs/screenshots/workbench-1440.png`).
+
+Visible labels were renamed from RSI to RLP, including the advisory phase, the
+state-read error and the scientific note. API fields such as `rsiReadable` /
+`rsiVersion` keep their names as compatibility aliases.
+
+## 7. Not in this version
 
 - Project deletion and worktree cleanup stay API-only.
 - A full decision-trace viewer is not built; the event list links to RLP state.
-- No screenshot refresh was performed for this branch (the UI change is
-  additive and reuses existing classes); `scripts/ui-acceptance.mjs` covers the
-  shell and should be re-run before a release tag.
+- Ticket stop/resume is exercised by unit/integration tests; the acceptance
+  script does not click those buttons yet.

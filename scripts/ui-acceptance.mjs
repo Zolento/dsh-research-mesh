@@ -150,8 +150,10 @@ async function main() {
     const token = /token=([A-Za-z0-9_-]+)/.exec(log)?.[1];
     if (token === undefined) throw new Error('boot log has no token');
     const base = `http://127.0.0.1:${PORT}`;
+    // rc1 activates optional host services after the plugin, so poll instead of
+    // assuming the mock LLM is registered at the first request.
+    await waitFor(async () => (await api(base, '/bootstrap')).catalog.length > 0, 'mock catalog', 15000);
     const bootstrap = await api(base, '/bootstrap');
-    if (bootstrap.catalog.length === 0) throw new Error('mock catalog did not register');
     const created = await api(base, '/projects', {
       method: 'POST',
       body: JSON.stringify({

@@ -4,8 +4,8 @@
 
 Two main views:
 
-1. **Projects** — long-lived research projects, RSI readability, group count, status.
-2. **Project Workbench** — RSI summary, three groups, execution, recent activity.
+1. **Projects** — long-lived research projects, RLP readability, group count, status.
+2. **Project Workbench** — RLP summary, three groups, execution, recent activity.
 
 Group detail expands inside the Workbench. Conversations stay in DSH's native chat.
 Model configuration is a `settings.section` page plus a full-width Models view in the
@@ -34,7 +34,7 @@ used for the console.
 
 ### Projects
 
-- Empty state: "还没有研究项目。关联一个已有 RSI 项目以开始。"
+- Empty state: "还没有研究项目。关联一个已有 RLP 项目以开始。"
 - Link form asks name, canonical `research-state.json` path, Git repository path and an
   optional description.
 - Host rejects a missing/invalid state, a state without `state_version`, or a non-Git
@@ -47,7 +47,7 @@ used for the console.
 
 - Header: back, project name/description, status, new discussion, local simulation,
   pause/resume.
-- RSI: `state_version`, goal, last file update, critical uncertainties, planned/running/
+- RLP: `state_version`, goal, last file update, critical uncertainties, planned/running/
   done experiments, scheduler `next_actions` (read-only). A `decision.next_phase` is
   labelled **advisory**; Mesh never invents an R0–R14 stage.
 - Groups: route, worktree branch, current Mesh task. Expanded: Captain, four subagent
