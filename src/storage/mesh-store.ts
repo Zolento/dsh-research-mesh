@@ -166,6 +166,10 @@ CREATE TABLE IF NOT EXISTS mesh_projects (
   repository_ref TEXT NOT NULL,
   status TEXT NOT NULL,
   runnable INTEGER NOT NULL,
+  source_dir TEXT,
+  control_dir TEXT,
+  worktrees_dir TEXT,
+  artifacts_dir TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -332,6 +336,10 @@ function projectRow(row: Row): MeshProjectRecord {
     repositoryRef: text(row, 'repository_ref'),
     status: text(row, 'status') as MeshProjectStatus,
     runnable: flag(row, 'runnable'),
+    sourceDir: nullableText(row, 'source_dir'),
+    controlDir: nullableText(row, 'control_dir'),
+    worktreesDir: nullableText(row, 'worktrees_dir'),
+    artifactsDir: nullableText(row, 'artifacts_dir'),
     createdAt: text(row, 'created_at'),
     updatedAt: text(row, 'updated_at'),
   };
@@ -374,6 +382,10 @@ export class MeshStore {
     this.#store.transaction(db => {
       db.exec(DDL);
       const found = db.prepare('SELECT value FROM mesh_meta WHERE key = ?').get('schema_version') as Row | undefined;
+      const projectColumns = db.prepare('PRAGMA table_info(mesh_projects)').all().map(row => String((row as Row).name));
+      for (const column of ['source_dir', 'control_dir', 'worktrees_dir', 'artifacts_dir']) {
+        if (!projectColumns.includes(column)) db.exec(`ALTER TABLE mesh_projects ADD COLUMN ${column} TEXT`);
+      }
       if (found === undefined) {
         db.prepare('INSERT INTO mesh_meta (key, value) VALUES (?, ?)').run('schema_version', String(MESH_SCHEMA_VERSION));
         db.prepare('INSERT INTO mesh_meta (key, value) VALUES (?, ?)').run('created_at', nowIso());
@@ -402,11 +414,14 @@ export class MeshStore {
     this.#store.transaction(db => {
       try {
         db.prepare(`INSERT INTO mesh_projects
-          (project_id, name, description, rsi_state_ref, repository_ref, status, runnable, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          (project_id, name, description, rsi_state_ref, repository_ref, status, runnable,
+           source_dir, control_dir, worktrees_dir, artifacts_dir, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(
             record.projectId, record.name, record.description, record.rsiStateRef, record.repositoryRef,
-            record.status, record.runnable ? 1 : 0, record.createdAt, record.updatedAt,
+            record.status, record.runnable ? 1 : 0,
+            record.sourceDir, record.controlDir, record.worktreesDir, record.artifactsDir,
+            record.createdAt, record.updatedAt,
           );
       } catch (error) {
         if (uniqueViolation(error)) {

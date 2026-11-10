@@ -27,6 +27,12 @@ export interface CreateProjectInput {
   readonly rsiStateRef: string;
   /** Absolute Git repository path. */
   readonly repositoryRef: string;
+  /** Executable checkout; defaults to the repository itself (whole-repo project). */
+  readonly sourceDir?: string;
+  /** Per-project control directory; defaults to `<base controlDir>/projects/<id>`. */
+  readonly controlDir?: string;
+  readonly worktreesDir?: string;
+  readonly artifactsDir?: string;
 }
 
 /** One RSI route state discovered in a repository. */
@@ -189,26 +195,38 @@ export class ProjectRegistry {
     } catch {
       stateInsideRuntime = false;
     }
+    // A project is runnable when its own checkout is the executable source.
+    // Whole-repository projects default to the repository itself, so a Mesh can
+    // host many independent projects instead of one pinned checkout.
+    const sourceDir = resolve(input.sourceDir ?? repositoryRef);
     let runnable = false;
     try {
-      runnable = stateInsideRuntime && realpathSync(repositoryRef) === realpathSync(this.#config.sourceDir);
+      runnable = realpathSync(sourceDir) === realpathSync(repositoryRef);
     } catch {
       runnable = false;
     }
     const now = nowIso();
+    const projectId = newId(ID_PREFIX.project);
+    const controlDir = resolve(input.controlDir ?? join(this.#config.controlDir, 'projects', projectId));
     const record: MeshProjectRecord = {
-      projectId: newId(ID_PREFIX.project),
+      projectId,
       name,
       description,
       rsiStateRef,
       repositoryRef,
       status: runnable ? 'active' : 'registered',
       runnable,
+      sourceDir: resolve(input.sourceDir ?? repositoryRef),
+      controlDir,
+      worktreesDir: resolve(input.worktreesDir ?? join(controlDir, 'worktrees')),
+      artifactsDir: resolve(input.artifactsDir ?? join(controlDir, 'artifacts')),
       createdAt: now,
       updatedAt: now,
     };
     this.#store.insertProject(record);
-    this.#store.appendEvent('project', record.projectId, 'registered', { rsiStateRef, repositoryRef, runnable });
+    this.#store.appendEvent('project', record.projectId, 'registered', {
+      rsiStateRef, repositoryRef, runnable, sourceDir: record.sourceDir, controlDir: record.controlDir,
+    });
     this.#logger.info('research project registered', { projectId: record.projectId, runnable });
     return this.view(record);
   }

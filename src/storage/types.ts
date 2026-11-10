@@ -186,6 +186,14 @@ export interface MeshProjectRecord {
   readonly status: MeshProjectStatus;
   /** Whether this runtime can create groups/worktrees for the project. */
   readonly runnable: boolean;
+  /** Executable checkout for this project (its own source, not a global one). */
+  readonly sourceDir: string | null;
+  /** Per-project control directory (SQLite, logs, manifests, outcomes). */
+  readonly controlDir: string | null;
+  /** Per-project worktree root. */
+  readonly worktreesDir: string | null;
+  /** Per-project artifact store. */
+  readonly artifactsDir: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
