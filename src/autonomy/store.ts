@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS mesh_triggers (
   occurred_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   disposition TEXT NOT NULL,
-  ticket_id TEXT
+  ticket_id TEXT,
+  principal_kind TEXT NOT NULL DEFAULT 'system',
+  principal_id TEXT NOT NULL DEFAULT 'mesh-host'
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_triggers_project ON mesh_triggers(project_id, received_at);
 CREATE INDEX IF NOT EXISTS idx_mesh_triggers_thread ON mesh_triggers(thread_key);
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS mesh_mandates (
   resource_ceiling_json TEXT NOT NULL,
   rlp_scope TEXT NOT NULL,
   policy_version TEXT NOT NULL,
+  policy_digest TEXT NOT NULL DEFAULT '',
   autonomous INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   revoked_at TEXT,
@@ -74,6 +77,8 @@ CREATE TABLE IF NOT EXISTS mesh_tickets (
   title TEXT NOT NULL,
   objective TEXT NOT NULL,
   status TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'engineering',
+  outcome_ref TEXT,
   mandate_id TEXT NOT NULL REFERENCES mesh_mandates(mandate_id),
   group_id TEXT,
   priority INTEGER NOT NULL,
@@ -125,11 +130,37 @@ CREATE TABLE IF NOT EXISTS mesh_effects (
   max_attempts INTEGER NOT NULL,
   next_run_at TEXT NOT NULL,
   last_error TEXT,
+  owner TEXT,
+  claimed_at TEXT,
+  lease_expires_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (kind, dedupe_key)
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_effects_due ON mesh_effects(status, next_run_at);
+
+CREATE TABLE IF NOT EXISTS mesh_policy (
+  policy_id TEXT PRIMARY KEY CHECK (policy_id = 'current'),
+  version TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mesh_threads (
+  thread_key TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_threads_project ON mesh_threads(project_id);
+
+CREATE TABLE IF NOT EXISTS mesh_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mesh_assignments_job
+  ON mesh_assignments(job_id) WHERE job_id IS NOT NULL;
 `;
 
 type Row = Record<string, unknown>;
@@ -157,6 +188,8 @@ function triggerFrom(row: Row): TriggerRecord {
     receivedAt: str(row, 'received_at'),
     disposition: str(row, 'disposition') as TriggerDisposition,
     ticketId: nullableStr(row, 'ticket_id'),
+    principalKind: str(row, 'principal_kind'),
+    principalId: str(row, 'principal_id'),
   };
 }
 
@@ -173,6 +206,7 @@ function mandateFrom(row: Row): MandateRecord {
     resourceCeilingJson: str(row, 'resource_ceiling_json'),
     rlpScope: str(row, 'rlp_scope'),
     policyVersion: str(row, 'policy_version'),
+    policyDigest: str(row, 'policy_digest'),
     autonomous: num(row, 'autonomous') === 1,
     createdAt: str(row, 'created_at'),
     revokedAt: nullableStr(row, 'revoked_at'),
@@ -188,6 +222,8 @@ function ticketFrom(row: Row): TicketRecord {
     title: str(row, 'title'),
     objective: str(row, 'objective'),
     status: str(row, 'status') as TicketStatus,
+    kind: (str(row, 'kind') === 'research' ? 'research' : 'engineering'),
+    outcomeRef: nullableStr(row, 'outcome_ref'),
     mandateId: str(row, 'mandate_id'),
     groupId: nullableStr(row, 'group_id'),
     priority: num(row, 'priority'),
@@ -231,6 +267,9 @@ function effectFrom(row: Row): EffectRecord {
     maxAttempts: num(row, 'max_attempts'),
     nextRunAt: str(row, 'next_run_at'),
     lastError: nullableStr(row, 'last_error'),
+    owner: nullableStr(row, 'owner'),
+    claimedAt: nullableStr(row, 'claimed_at'),
+    leaseExpiresAt: nullableStr(row, 'lease_expires_at'),
     createdAt: str(row, 'created_at'),
     updatedAt: str(row, 'updated_at'),
   };
@@ -245,7 +284,59 @@ export class AutonomyStore {
    */
   constructor(store: SqliteTeamStore) {
     this.#store = store;
-    this.#store.transaction(db => { db.exec(AUTONOMY_DDL); });
+    this.#store.transaction(db => {
+      db.exec(AUTONOMY_DDL);
+      this.#migrate(db);
+    });
+  }
+
+  /** Additive schema migration from the v0.2.0 shape to v0.2.1. */
+  #migrate(db: DatabaseSync): void {
+    const columns = (table: string): string[] =>
+      db.prepare(`PRAGMA table_info(${table})`).all().map(row => String((row as Row).name));
+    if (!columns('mesh_tickets').includes('kind')) {
+      db.exec("ALTER TABLE mesh_tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'engineering'");
+    }
+    if (!columns('mesh_tickets').includes('outcome_ref')) {
+      db.exec('ALTER TABLE mesh_tickets ADD COLUMN outcome_ref TEXT');
+    }
+    if (!columns('mesh_effects').includes('owner')) {
+      db.exec('ALTER TABLE mesh_effects ADD COLUMN owner TEXT');
+      db.exec('ALTER TABLE mesh_effects ADD COLUMN claimed_at TEXT');
+      db.exec('ALTER TABLE mesh_effects ADD COLUMN lease_expires_at TEXT');
+    }
+    if (!columns('mesh_triggers').includes('principal_kind')) {
+      db.exec("ALTER TABLE mesh_triggers ADD COLUMN principal_kind TEXT NOT NULL DEFAULT 'system'");
+      db.exec("ALTER TABLE mesh_triggers ADD COLUMN principal_id TEXT NOT NULL DEFAULT 'mesh-host'");
+    }
+    if (!columns('mesh_mandates').includes('policy_digest')) {
+      db.exec("ALTER TABLE mesh_mandates ADD COLUMN policy_digest TEXT NOT NULL DEFAULT ''");
+    }
+    db.exec("INSERT INTO mesh_meta(key, value) VALUES ('autonomy_schema_version', '2') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  }
+
+  /**
+   * Downgrade the additive v2 schema for rollback drills. Rows are preserved;
+   * only v2-only columns/tables are removed.
+   * @param db - open connection.
+   */
+  rollbackToV1(db: DatabaseSync): void {
+    db.exec('DROP INDEX IF EXISTS uq_mesh_assignments_job');
+    db.exec('DROP TABLE IF EXISTS mesh_threads');
+    db.exec('DROP TABLE IF EXISTS mesh_policy');
+    for (const column of ['kind', 'outcome_ref']) {
+      try { db.exec(`ALTER TABLE mesh_tickets DROP COLUMN ${column}`); } catch { /* older sqlite */ }
+    }
+    for (const column of ['owner', 'claimed_at', 'lease_expires_at']) {
+      try { db.exec(`ALTER TABLE mesh_effects DROP COLUMN ${column}`); } catch { /* older sqlite */ }
+    }
+    db.exec("INSERT INTO mesh_meta(key, value) VALUES ('autonomy_schema_version', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+  }
+
+  /** Current additive schema version. */
+  schemaVersion(): number {
+    const row = this.read(db => db.prepare("SELECT value FROM mesh_meta WHERE key = 'autonomy_schema_version'").get() as Row | undefined);
+    return row === undefined ? 0 : Number(row.value);
   }
 
   /** Run one transaction on the shared connection. */
@@ -265,11 +356,11 @@ export class AutonomyStore {
     return this.transaction(db => {
       const result = db.prepare(`INSERT OR IGNORE INTO mesh_triggers
         (trigger_id, source, event_id, project_id, kind, dedupe_key, payload_json, payload_digest,
-         thread_key, actor, occurred_at, received_at, disposition, ticket_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         thread_key, actor, occurred_at, received_at, disposition, ticket_id, principal_kind, principal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         record.triggerId, record.source, record.eventId, record.projectId, record.kind, record.dedupeKey,
         record.payloadJson, record.payloadDigest, record.threadKey, record.actor, record.occurredAt,
-        record.receivedAt, record.disposition, record.ticketId,
+        record.receivedAt, record.disposition, record.ticketId, record.principalKind, record.principalId,
       );
       return Number(result.changes) === 1;
     });
@@ -304,11 +395,12 @@ export class AutonomyStore {
     this.transaction(db => {
       db.prepare(`INSERT INTO mesh_mandates
         (mandate_id, project_id, route_id, issuer, source, trigger_id, scope_json, operations_json,
-         resource_ceiling_json, rlp_scope, policy_version, autonomous, created_at, revoked_at, revoke_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         resource_ceiling_json, rlp_scope, policy_version, policy_digest, autonomous, created_at, revoked_at, revoke_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         record.mandateId, record.projectId, record.routeId, record.issuer, record.source, record.triggerId,
         record.scopeJson, record.operationsJson, record.resourceCeilingJson, record.rlpScope,
-        record.policyVersion, record.autonomous ? 1 : 0, record.createdAt, record.revokedAt, record.revokeReason,
+        record.policyVersion, record.policyDigest, record.autonomous ? 1 : 0, record.createdAt,
+        record.revokedAt, record.revokeReason,
       );
     });
   }
@@ -330,12 +422,13 @@ export class AutonomyStore {
   insertTicket(record: TicketRecord): void {
     this.transaction(db => {
       db.prepare(`INSERT INTO mesh_tickets
-        (ticket_id, project_id, route_id, title, objective, status, mandate_id, group_id, priority,
-         autonomous, idempotency_key, scope_json, waiting_reason, created_at, updated_at, ended_at, end_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        record.ticketId, record.projectId, record.routeId, record.title, record.objective, record.status,
+        (ticket_id, project_id, route_id, kind, title, objective, status, mandate_id, group_id, priority,
+         autonomous, idempotency_key, scope_json, waiting_reason, created_at, updated_at, ended_at, end_reason, outcome_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.ticketId, record.projectId, record.routeId, record.kind, record.title, record.objective, record.status,
         record.mandateId, record.groupId, record.priority, record.autonomous ? 1 : 0, record.idempotencyKey,
         record.scopeJson, record.waitingReason, record.createdAt, record.updatedAt, record.endedAt, record.endReason,
+        record.outcomeRef,
       );
     });
   }
@@ -353,9 +446,9 @@ export class AutonomyStore {
   updateTicket(record: TicketRecord): void {
     this.transaction(db => {
       db.prepare(`UPDATE mesh_tickets SET status = ?, group_id = ?, mandate_id = ?, scope_json = ?, waiting_reason = ?,
-        updated_at = ?, ended_at = ?, end_reason = ? WHERE ticket_id = ?`).run(
+        updated_at = ?, ended_at = ?, end_reason = ?, outcome_ref = ? WHERE ticket_id = ?`).run(
         record.status, record.groupId, record.mandateId, record.scopeJson, record.waitingReason, record.updatedAt,
-        record.endedAt, record.endReason, record.ticketId,
+        record.endedAt, record.endReason, record.outcomeRef, record.ticketId,
       );
     });
   }
@@ -492,14 +585,95 @@ export class AutonomyStore {
         .all(status, limit).map(row => effectFrom(row as Row)));
   }
 
-  /** Atomically move a pending effect to running; false when another ticker won. */
-  claimEffect(effectId: string, at = nowIso()): boolean {
+  /**
+   * Atomically claim a due effect: pending -> running with an owner and a lease.
+   * @param effectId - effect identity.
+   * @param owner - worker identity.
+   * @param leaseMs - lease lifetime.
+   * @param at - claim timestamp.
+   * @returns true when this caller won the claim.
+   */
+  claimEffect(effectId: string, owner: string, leaseMs: number, at = nowIso()): boolean {
+    const lease = new Date(Date.parse(at) + leaseMs).toISOString();
     return this.transaction(db => {
-      const result = db.prepare(
-        "UPDATE mesh_effects SET status = 'running', updated_at = ? WHERE effect_id = ? AND status = 'pending'",
-      ).run(at, effectId);
+      const result = db.prepare(`UPDATE mesh_effects
+        SET status = 'running', owner = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ?
+        WHERE effect_id = ? AND status = 'pending'`).run(owner, at, lease, at, effectId);
       return Number(result.changes) === 1;
     });
+  }
+
+  /** Running rows whose lease expired; a crashed owner can no longer hold them. */
+  staleClaims(nowIsoValue: string, limit = 20): readonly EffectRecord[] {
+    return this.read(db => db.prepare(`SELECT * FROM mesh_effects
+      WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+      ORDER BY lease_expires_at ASC LIMIT ?`).all(nowIsoValue, limit).map(row => effectFrom(row as Row)));
+  }
+
+  /**
+   * Recover one stale running row. The caller decides whether the kind is safe
+   * to replay; this only performs the conditional transition.
+   * @param effectId - effect identity.
+   * @param next - `pending` (replay) or `failed` (reconcile required).
+   * @param options - error text and next run time.
+   */
+  recoverClaim(effectId: string, next: 'pending' | 'failed', options: { error: string; nextRunAt?: string; at?: string }): boolean {
+    const at = options.at ?? nowIso();
+    return this.transaction(db => {
+      const result = db.prepare(`UPDATE mesh_effects
+        SET status = ?, owner = NULL, claimed_at = NULL, lease_expires_at = NULL,
+            attempts = attempts + 1, last_error = ?, next_run_at = COALESCE(?, next_run_at), updated_at = ?
+        WHERE effect_id = ? AND status = 'running'`).run(next, options.error, options.nextRunAt ?? null, at, effectId);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  // -- policy --------------------------------------------------------------
+
+  /** Load the persisted policy, if any. */
+  loadPolicy(): { version: string; digest: string; json: string; updatedAt: string } | undefined {
+    const row = this.read(db => db.prepare("SELECT * FROM mesh_policy WHERE policy_id = 'current'").get() as Row | undefined);
+    return row === undefined ? undefined : {
+      version: str(row, 'version'), digest: str(row, 'digest'),
+      json: str(row, 'json'), updatedAt: str(row, 'updated_at'),
+    };
+  }
+
+  /** Persist the single current policy row. */
+  savePolicy(version: string, digest: string, json: string, at = nowIso()): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_policy (policy_id, version, digest, json, updated_at)
+        VALUES ('current', ?, ?, ?, ?)
+        ON CONFLICT(policy_id) DO UPDATE SET version = excluded.version, digest = excluded.digest,
+          json = excluded.json, updated_at = excluded.updated_at`).run(version, digest, json, at);
+    });
+  }
+
+  // -- threads -------------------------------------------------------------
+
+  /** Record the owning project of a thread key (idempotent). */
+  upsertThread(threadKey: string, projectId: string, at = nowIso()): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_threads (thread_key, project_id, created_at) VALUES (?, ?, ?)
+        ON CONFLICT(thread_key) DO NOTHING`).run(threadKey, projectId, at);
+    });
+  }
+
+  /** Project that owns a thread key. */
+  threadProject(threadKey: string): string | undefined {
+    const row = this.read(db => db.prepare('SELECT project_id FROM mesh_threads WHERE thread_key = ?').get(threadKey) as Row | undefined);
+    return row === undefined ? undefined : String(row.project_id);
+  }
+
+  /** Group facts for authorization, read from the Mesh registry. */
+  groupFacts(teamId: string): { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined {
+    const row = this.read(db => db.prepare('SELECT project_id, status FROM mesh_groups WHERE team_id = ?').get(teamId) as Row | undefined);
+    if (row === undefined) return undefined;
+    return {
+      teamId,
+      projectId: String(row.project_id),
+      status: String(row.status) as import('../storage/types.ts').MeshGroupStatus,
+    };
   }
 
   finishEffect(effectId: string, status: EffectStatus, options: {
@@ -511,7 +685,8 @@ export class AutonomyStore {
     const at = options.at ?? nowIso();
     this.transaction(db => {
       db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
-        next_run_at = COALESCE(?, next_run_at), last_error = ?, updated_at = ? WHERE effect_id = ?`).run(
+        next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
+        lease_expires_at = NULL, updated_at = ? WHERE effect_id = ?`).run(
         status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
       );
     });

@@ -7,7 +7,7 @@ Date: 2026-11-10 · Branch `feat/rlp-v2.2-fusion`
 ```bash
 cd dsh-research-mesh
 npm run typecheck     # tsc -p tsconfig.json --noEmit   → PASS (exit 0)
-npm run test:all      # node --test 'tests/**/*.test.ts' → 124/124 pass
+npm run test:all      # node --test 'tests/**/*.test.ts' → 153/153 pass
 node scripts/check-dsh.mjs
 # check-dsh: installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
 # check-dsh: @deepseek-ai/schemastery 3.19.0; PASS
@@ -20,14 +20,14 @@ node scripts/ui-acceptance.mjs  # PASS (isolated profile, headless Chrome)
 
 | Suite | Tests | Result |
 |---|---|---|
-| unit | 107 | pass |
-| integration | 11 | pass |
-| e2e | 6 | pass |
-| **total** | **124** | **pass, 0 fail, 0 skip** |
+| unit | 136 | pass |
+| integration | 12 | pass |
+| e2e | 5 | pass |
+| **total** | **153** | **pass, 0 fail, 0 skip** |
 
 Baseline before the branch: 99 tests, 69 pass / 30 fail — every failure was the
 missing old `rsi-pipeline` install. Migration to the RLP v2.2.0 skill restored
-those 99 (98 + one semantics update), and the fusion added 25 new tests.
+those 99 (98 + one semantics update), and the fusion added 54 new tests.
 
 ## 3. New coverage
 
@@ -37,6 +37,12 @@ those 99 (98 + one semantics update), and the fusion added 25 new tests.
 | `tests/unit/rlp.test.ts` (8) | v2.2.0 discovery + digest; missing/legacy path fails closed; storage matrix NEW/READY/legacy/ambiguous; plan loads real bodies and stable digest; unknown preset blocks; packet non-canonical + stale detection + rebuild; subagent permit subset and experiment manifest/approval; resolver cache/invalidate |
 | `tests/integration/rlp-service.test.ts` (3) | service RLP status/storage; explicit trigger → ticket → workbench projection → assignment → stop; legacy-only and ambiguous roots refuse `createGroup` |
 | `tests/unit/projects.test.ts` (updated) | `storageKind` and migration semantics for new/legacy/none roots |
+| `tests/unit/security.test.ts` (7) | forged principal/source/actor; web cannot create/assign; stop allowed, re-auth denied; monotonic policy |
+| `tests/unit/completion.test.ts` (6) | success parks at waiting_evidence; no proof → HOLD; proof records outcome; engineering/cancel; service verifier PASS/HOLD |
+| `tests/unit/boundaries.test.ts` (5) | cross-project trigger/team/thread; context→owned upgrade; route mismatch |
+| `tests/unit/effects-recovery.test.ts` (5) | expired claim replay vs reconcile-only park; double worker; backoff; double restart |
+| `tests/unit/policy.test.ts` (4) | observe→auto→restart; auto→off→restart; revoked mandate; mandate binds persisted policy |
+| `tests/unit/migrations.test.ts` (1) | v2 upgrade, rollback, re-upgrade preserve rows |
 
 ## 4. Regression list (existing, still green)
 

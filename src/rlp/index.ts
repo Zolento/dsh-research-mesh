@@ -79,6 +79,17 @@ export class RlpRuntime {
     return new RlpRuntime(skill, null);
   }
 
+  /**
+   * Whether the on-disk skill changed since discovery. A stale digest means the
+   * loaded protocol/context may not be current and the runtime must rebuild.
+   * @returns true when the skill is no longer the one discovered.
+   */
+  isStale(): boolean {
+    if (this.#skill === null) return false;
+    const current = inspectRlpSkill(this.#skill.skillPath, this.#skill.python);
+    return !current.compatible || current.digest !== this.#skill.digest;
+  }
+
   /** Whether a compatible installation was found. */
   get available(): boolean {
     return this.#skill !== null;

@@ -14,7 +14,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MeshError } from '../errors.ts';
@@ -238,7 +238,30 @@ export class RlpContextAdapter {
         args: [input.preset ?? input.entry ?? 'default'],
       });
     }
-    return normalizePlan(result.json);
+    const plan = normalizePlan(result.json);
+    this.#assertLoadedDigests(plan);
+    return plan;
+  }
+
+  /**
+   * Prove that every loaded body still matches the digest the planner recorded.
+   * A skill upgrade between plan and load must not be served as current rules.
+   * @param plan - normalized plan.
+   */
+  #assertLoadedDigests(plan: RlpContextPlan): void {
+    for (const doc of plan.loaded) {
+      if (doc.digest === '') continue;
+      const path = join(this.#skill.skillPath, doc.path);
+      if (!existsSync(path)) {
+        throw new MeshError('RLP_CONTEXT_STALE', 'a loaded RLP document disappeared after planning', { path: doc.path });
+      }
+      const digest = createHash('sha256').update(readFileSync(path)).digest('hex').slice(0, 16);
+      if (digest !== doc.digest) {
+        throw new MeshError('RLP_CONTEXT_STALE', 'a loaded RLP document changed after planning', {
+          path: doc.path, planned: doc.digest, current: digest,
+        });
+      }
+    }
   }
 
   /**

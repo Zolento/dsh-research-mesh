@@ -50,7 +50,7 @@ dispatch note. Keep these three in sync.
 
 ```bash
 npm run typecheck
-npm run test:all          # 124 tests at the fusion baseline
+npm run test:all          # 153 tests at the fusion baseline
 node scripts/check-dsh.mjs
 node scripts/ui-acceptance.mjs   # for UI changes; isolated profile only
 ```
@@ -61,7 +61,8 @@ limitations. Do not push or deploy.
 
 ## Documentation
 
-- Fusion audit and design: `docs/fusion/00..09`
+- Fusion audit and design: `docs/fusion/00..10`
+- Independent security audit fixes: `docs/fusion/10-security-audit.md`
 - Plugin behavior: `docs/MESH-OPERATING-RULES.md`
 - Project onboarding: `docs/PROJECT-ONBOARDING.md`
 - MoSA migration: `docs/MOSA-MESH-MIGRATION.md`

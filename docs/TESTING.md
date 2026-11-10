@@ -27,8 +27,8 @@ PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 124 tests after the RLP v2.2.0 fusion
-(107 unit + 11 integration + 6 end-to-end). The v0.1.0 RSI-era baseline and the
+`npm run test:all` is the aggregate: 153 tests after the RLP v2.2.0 fusion
+(114 unit + 11 integration + 6 end-to-end). The v0.1.0 RSI-era baseline and the
 harness-audit findings are historical; current evidence is in
 [`fusion/07-test-evidence.md`](fusion/07-test-evidence.md). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).

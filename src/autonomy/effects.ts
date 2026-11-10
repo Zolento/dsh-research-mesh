@@ -9,6 +9,7 @@
  * remote experiment.
  */
 
+import { randomUUID } from 'node:crypto';
 import { MeshError } from '../errors.ts';
 import { isoFromMs, nowIso } from '../util/time.ts';
 import type { EffectRecord, EffectStatus } from './types.ts';
@@ -43,6 +44,10 @@ export interface EffectsOptions {
   readonly maxDelayMs?: number;
   /** Attempts before a row is declared dead. */
   readonly maxAttempts?: number;
+  /** Identity recorded on a claim; defaults to a per-process id. */
+  readonly owner?: string;
+  /** Claim lease before a crashed owner is recovered. */
+  readonly leaseMs?: number;
 }
 
 /** One tick report. */
@@ -52,6 +57,14 @@ export interface EffectsTickReport {
   readonly deferred: number;
   readonly failed: number;
   readonly dead: number;
+  /** Stale running claims recovered before this tick. */
+  readonly recovered: number;
+}
+
+/** Result of one recovery scan. */
+export interface EffectsRecoveryReport {
+  readonly replayed: number;
+  readonly parked: number;
 }
 
 function errorText(error: unknown): string {
@@ -67,6 +80,8 @@ export class EffectsRunner {
   readonly #baseDelayMs: number;
   readonly #maxDelayMs: number;
   readonly #maxAttempts: number;
+  readonly #owner: string;
+  readonly #leaseMs: number;
 
   /**
    * @param store - autonomy store (owns the transaction boundary).
@@ -78,6 +93,40 @@ export class EffectsRunner {
     this.#baseDelayMs = options.baseDelayMs ?? 2_000;
     this.#maxDelayMs = options.maxDelayMs ?? 300_000;
     this.#maxAttempts = options.maxAttempts ?? 5;
+    this.#owner = options.owner ?? `eff-worker-${randomUUID()}`;
+    this.#leaseMs = options.leaseMs ?? 5 * 60_000;
+  }
+
+  /** Claim owner recorded on running rows. */
+  get owner(): string {
+    return this.#owner;
+  }
+
+  /**
+   * Recover effects whose owner lease expired. A safe kind is replayed; an
+   * external side effect whose outcome is unknown is parked for reconciliation.
+   * @returns counts by recovery decision.
+   */
+  recover(): EffectsRecoveryReport {
+    const now = nowIso();
+    let replayed = 0;
+    let parked = 0;
+    for (const row of this.#store.staleClaims(now)) {
+      const handler = this.#handlers.get(row.kind);
+      if (handler === undefined || handler.retry === 'safe') {
+        if (this.#store.recoverClaim(row.effectId, 'pending', {
+          error: 'claim lease expired; replaying a safe effect',
+          nextRunAt: now,
+          at: now,
+        })) replayed += 1;
+      } else {
+        if (this.#store.recoverClaim(row.effectId, 'failed', {
+          error: 'RECONCILE_REQUIRED: owner died while an external effect was in flight',
+          at: now,
+        })) parked += 1;
+      }
+    }
+    return { replayed, parked };
   }
 
   /**
@@ -118,6 +167,9 @@ export class EffectsRunner {
       maxAttempts: maxAttempts ?? this.#maxAttempts,
       nextRunAt: at,
       lastError: null,
+      owner: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -135,13 +187,14 @@ export class EffectsRunner {
    * @returns counts by outcome.
    */
   async tick(limit = 20): Promise<EffectsTickReport> {
+    const recovery = this.recover();
     const due = this.#store.listDueEffects(isoFromMs(this.#now()), limit);
     let done = 0;
     let deferred = 0;
     let failed = 0;
     let dead = 0;
     for (const row of due) {
-      if (!this.#store.claimEffect(row.effectId)) continue;
+      if (!this.#store.claimEffect(row.effectId, this.#owner, this.#leaseMs, nowIso())) continue;
       const handler = this.#handlers.get(row.kind);
       if (handler === undefined) {
         this.#store.finishEffect(row.effectId, 'dead', { error: `no handler for ${row.kind}` });
@@ -189,7 +242,7 @@ export class EffectsRunner {
         failed += 1;
       }
     }
-    return { processed: due.length, done, deferred, failed, dead };
+    return { processed: due.length, done, deferred, failed, dead, recovered: recovery.replayed + recovery.parked };
   }
 
   /** All rows, for diagnostics and the Workbench. */

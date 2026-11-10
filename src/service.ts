@@ -14,7 +14,11 @@ import type { RlpSubagentRole } from './rlp/subagent-context.ts';
 import { AutonomyStore } from './autonomy/store.ts';
 import { EffectsRunner, type EffectsTickReport } from './autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from './autonomy/engine.ts';
-import type { AssignmentRecord, AutonomyPolicy, CreateTicketInput, ReceiveResult, TicketRecord, TriggerInput, TriggerRecord } from './autonomy/types.ts';
+import type { AssignmentRecord, AutonomyPolicy, CompletionProof, CreateTicketInput, ReceiveResult, TicketRecord, TriggerInput, TriggerRecord } from './autonomy/types.ts';
+import { SYSTEM_PRINCIPAL, humanPrincipal, requireHuman, type Principal } from './autonomy/principal.ts';
+import { RlpCompletionVerifier, requireScientificPass, type CompletionVerifier } from './rlp/outcome.ts';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { authorizeAction } from './autonomy/authorize.ts';
 import type { MeshConfig } from './config/types.ts';
 import { ensureProjectLayout, type ProjectLayout } from './project.ts';
 import { MeshStore } from './storage/mesh-store.ts';
@@ -73,6 +77,10 @@ export interface MeshServiceOptions {
   readonly modelSettings?: ModelSettingsStore;
   readonly gpuProbe?: GpuProbe;
   readonly transport?: import('./executors/transport.ts').JobTransport;
+  /** Seam for tests; defaults to the RLP decision verifier. */
+  readonly completionVerifier?: CompletionVerifier;
+  /** Effect claim owner; defaults to a per-process id. */
+  readonly effectOwner?: string;
 }
 
 /** Compact service status. */
@@ -145,6 +153,9 @@ export class MeshService {
   #subagents: DshHostContext['subagents'];
   #workerId: string | null = null;
   #transportKind = 'none';
+  #completionVerifier: CompletionVerifier | null = null;
+  readonly #completionOverride: CompletionVerifier | undefined;
+  readonly #effectOwner: string | undefined;
   #closing = false;
 
   /**
@@ -164,6 +175,8 @@ export class MeshService {
     this.#settingsOverride = options.modelSettings;
     this.#gpuProbeOverride = options.gpuProbe;
     this.#transportOverride = options.transport;
+    this.#completionOverride = options.completionVerifier;
+    this.#effectOwner = options.effectOwner;
   }
 
   /** Resolved configuration. */
@@ -181,12 +194,25 @@ export class MeshService {
       const store = new MeshStore(teamStore);
       const rlp = this.#createRlp();
       const autoStore = new AutonomyStore(teamStore);
-      const effects = new EffectsRunner(autoStore);
+      const effects = new EffectsRunner(autoStore, {
+        ...(this.#effectOwner === undefined ? {} : { owner: this.#effectOwner }),
+      });
       const autonomy = new AutonomyEngine({
         store: autoStore,
         effects,
         meshStore: store,
         policy: this.#initialPolicy(),
+        projectStatus: (projectId: string) => {
+          try {
+            const project = this.#projects?.get(projectId);
+            return project?.status ?? 'paused';
+          } catch { return 'paused'; }
+        },
+        rlpFormalRun: () => {
+          const layout = detectStorageLayout(this.#config.projectRoot);
+          return layout.kind !== 'legacy' && layout.kind !== 'ambiguous';
+        },
+        groupFacts: (teamId: string) => autoStore.groupFacts(teamId),
         handlers: {
           notice: payload => { store.appendEvent('trigger', String(payload.triggerId ?? 'unknown'), 'autonomy-notice', payload); },
           dispatch: payload => { store.appendEvent('ticket', String(payload.ticketId ?? 'unknown'), 'dispatch-requested', payload); },
@@ -394,8 +420,32 @@ export class MeshService {
     };
   }
 
+  /**
+   * Verify the optional operator secret for plugin HTTP routes. Constant-time;
+   * an unset secret means no HTTP caller is a human.
+   * @param token - value from `x-mesh-admin-token`.
+   * @returns true only when it matches the configured secret.
+   */
+  verifyAdminToken(token: string | undefined): boolean {
+    const expected = this.#config.security.adminToken;
+    if (expected === undefined || token === undefined || token === '') return false;
+    const left = createHash('sha256').update(token).digest();
+    const right = createHash('sha256').update(expected).digest();
+    return timingSafeEqual(left, right);
+  }
+
+  /** Rebuild the RLP runtime when its skill digest changed. */
+  #refreshRlp(): void {
+    if (this.#rlp === null || !this.#rlp.available) return;
+    if (!this.#rlp.isStale()) return;
+    this.#logger.warn('RLP skill changed since discovery; rebuilding adapters');
+    this.#rlp = this.#createRlp();
+    this.#completionVerifier = null;
+  }
+
   /** RLP installation status. */
   rlpStatus(): ReturnType<RlpRuntime['status']> {
+    this.#refreshRlp();
     return this.#rlp?.status() ?? { available: false, skillPath: null, version: null, digest: null, reason: 'not initialized' };
   }
 
@@ -415,6 +465,7 @@ export class MeshService {
    * @returns plan with real document bodies and load state.
    */
   async rlpContextPlan(input: { preset?: string; entry?: string; stage?: string; authorization?: string; domain?: string } = {}): Promise<RlpContextPlan> {
+    this.#refreshRlp();
     const rlp = this.#requireRlp();
     const plan = await rlp.context().load(input);
     return rlp.context().assertProceed(plan);
@@ -428,6 +479,7 @@ export class MeshService {
    * @returns verified, non-canonical packet metadata.
    */
   async rlpContextPacket(projectId: string, routeId: string, task: 'continue_method' | 'review_paper' | 'audit_evidence' | 'discover' | 'inspect'): Promise<RlpContextPacket> {
+    this.#refreshRlp();
     const rlp = this.#requireRlp();
     const project = this.#requireProjects().get(projectId);
     const resolution = await rlp.storage().resolve(project.repositoryRef);
@@ -453,13 +505,13 @@ export class MeshService {
   }
 
   /** Record one immutable Trigger and apply the deterministic Gate. */
-  recordTrigger(input: TriggerInput): ReceiveResult {
-    return this.#requireAutonomy().receiveTrigger(input);
+  recordTrigger(input: TriggerInput, principal: Principal = SYSTEM_PRINCIPAL): ReceiveResult {
+    return this.#requireAutonomy().receiveTrigger(input, principal);
   }
 
   /** Create a Ticket explicitly from a previously accepted Trigger. */
-  createTicket(input: CreateTicketInput): TicketRecord {
-    return this.#requireAutonomy().createTicket(input);
+  createTicket(input: CreateTicketInput, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    return this.#requireAutonomy().createTicket(input, principal);
   }
 
   listTickets(projectId: string): readonly TicketRecord[] {
@@ -478,44 +530,87 @@ export class MeshService {
     return this.#requireAutonomy().listAssignments(ticketId);
   }
 
-  assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
+  assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
     this.#requireTeams().get(teamId);
-    return this.#requireAutonomy().assign(ticketId, teamId, options);
+    return this.#requireAutonomy().assign(ticketId, teamId, options, principal);
   }
 
-  startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
-    return this.#requireAutonomy().startAssignment(assignmentId, options);
+  startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+    return this.#requireAutonomy().startAssignment(assignmentId, options, principal);
   }
 
-  finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }): AssignmentRecord {
-    return this.#requireAutonomy().finishAssignment(assignmentId, options);
+  finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+    return this.#requireAutonomy().finishAssignment(assignmentId, options, principal);
   }
 
-  markTicketCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
-    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId);
+  markTicketCompute(ticketId: string, jobId: string, assignmentId?: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId, principal);
   }
 
-  waitTicketForHuman(ticketId: string, reason: string): TicketRecord {
+  waitTicketForHuman(ticketId: string, reason: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    requireHuman(principal, 'parking a ticket for a human');
     return this.#requireAutonomy().waitForHuman(ticketId, reason);
   }
 
-  stopTicket(ticketId: string, reason: string, by = 'operator'): TicketRecord {
-    return this.#requireAutonomy().stopTicket(ticketId, by, reason);
+  stopTicket(ticketId: string, reason: string, by = 'operator', principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    return this.#requireAutonomy().stopTicket(ticketId, by, reason, principal);
   }
 
-  resumeTicket(ticketId: string, explicit = false): TicketRecord {
-    return this.#requireAutonomy().resumeTicket(ticketId, { explicit });
+  resumeTicket(ticketId: string, explicit = false, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    return this.#requireAutonomy().resumeTicket(ticketId, { explicit }, principal);
   }
 
-  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator'): TicketRecord {
-    return this.#requireAutonomy().endTicket(ticketId, reason, by);
+  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator', principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+    return this.#requireAutonomy().endTicket(ticketId, reason, by, principal);
+  }
+
+  /**
+   * Complete a research ticket only after RLP's own decision passes.
+   * @param ticketId - ticket identity.
+   * @param experimentId - RLP experiment id.
+   * @param routeId - RLP route that owns the state.
+   * @param principal - trusted caller (host/RLP outcome path).
+   * @returns ended ticket with the proof digest recorded.
+   */
+  async completeResearchTicket(ticketId: string, experimentId: string, routeId: string, principal: Principal = SYSTEM_PRINCIPAL): Promise<TicketRecord> {
+    this.#refreshRlp();
+    const ticket = this.#requireAutonomy().getTicket(ticketId);
+    if (ticket.kind !== 'research') {
+      throw new MeshError('TICKET_STATE_INVALID', 'only research tickets require an RLP completion proof', { ticketId, kind: ticket.kind });
+    }
+    const rlp = this.#requireRlp();
+    const resolution = await rlp.storage().resolve(this.#config.projectRoot);
+    rlp.storage().assertFormalRun(resolution);
+    const statePath = rlp.storage().statePath(resolution, routeId);
+    const completion = await this.#verifier().verify({ statePath, experimentId });
+    requireScientificPass(completion);
+    const proof: CompletionProof = {
+      ticketId,
+      experimentId,
+      stateVersion: completion.stateVersion,
+      stateDigest: completion.stateDigest,
+      decision: completion.decision,
+      verifiedAt: nowIso(),
+      proofDigest: completion.proofDigest,
+    };
+    return this.#requireAutonomy().endTicket(ticketId, 'completed', principal.id, principal, proof);
+  }
+
+  #verifier(): CompletionVerifier {
+    if (this.#completionOverride !== undefined) return this.#completionOverride;
+    if (this.#completionVerifier !== null) return this.#completionVerifier;
+    const rlp = this.#requireRlp();
+    const skill = rlp.skill;
+    if (skill === null) throw new MeshError('RLP_UNAVAILABLE', 'RLP skill is unavailable for completion verification');
+    this.#completionVerifier = new RlpCompletionVerifier(skill, this.#config.rlp.timeoutMs);
+    return this.#completionVerifier;
   }
 
   /** Change the autonomy mode; existing Mandates are not revoked. */
-  setAutonomyMode(mode: AutonomyPolicy['mode']): AutonomyPolicy {
+  setAutonomyMode(mode: AutonomyPolicy['mode'], principal: Principal = SYSTEM_PRINCIPAL): AutonomyPolicy {
     const autonomy = this.#requireAutonomy();
-    autonomy.setPolicy({ ...autonomy.policy, mode });
-    return autonomy.policy;
+    requireHuman(principal, 'changing the autonomy policy');
+    return autonomy.setPolicy({ ...autonomy.policy, mode });
   }
 
   /** Run one durable-effects tick (also called by `runWorkerOnce`). */
@@ -1323,34 +1418,53 @@ export class MeshService {
   async runWorkerOnce(options: { poll?: boolean } = {}): Promise<WorkerRoundResult> {
     await this.#requireEffects().tick();
     const result = await this.#requireWorker().runOnce(options);
-    for (const collected of result.collected) {
-      try {
-        // Artifact ingestion is the durable wake-up event: an Agent turn may be
-        // long gone while the compute job finished.
-        const assignment = this.#autoStore?.findAssignmentByJob(collected.jobId);
-        this.#requireAutonomy().receiveTrigger({
-          source: 'artifact',
-          eventId: `artifact:${collected.jobId}`,
-          projectId: collected.task.projectId,
-          kind: 'artifact_ingested',
-          dedupeKey: `artifact:${collected.jobId}`,
-          payload: {
-            jobId: collected.jobId,
-            artifactManifestDigest: collected.artifactManifestDigest,
-            ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
-          },
-          ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
-        });
-      } catch (error) {
-        this.#logger.warn('artifact wake-up trigger failed', { jobId: collected.jobId, error: String(error) });
-      }
-    }
+    for (const collected of result.collected) this.#recordArtifactIngested(collected);
     await this.#requireEffects().tick();
     return result;
   }
 
-  runUntilIdle(maxRounds = 50): Promise<number> {
-    return this.#requireWorker().runUntilIdle(maxRounds);
+  /**
+   * Record the durable Artifact event exactly once per job. Only a verified
+   * ingestion calls this; a failed transfer never produces a success event.
+   * @param result - ingestion result from the job executor.
+   */
+  #recordArtifactIngested(result: IngestionResult): void {
+    try {
+      const assignment = this.#autoStore?.findAssignmentByJob(result.jobId);
+      this.#requireAutonomy().receiveTrigger({
+        source: 'artifact',
+        eventId: `artifact:${result.jobId}`,
+        projectId: result.task.projectId,
+        kind: 'artifact_ingested',
+        dedupeKey: `artifact:${result.jobId}`,
+        payload: {
+          jobId: result.jobId,
+          artifactManifestDigest: result.artifactManifestDigest,
+          ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
+        },
+        ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
+      }, SYSTEM_PRINCIPAL);
+    } catch (error) {
+      this.#logger.warn('artifact wake-up trigger failed', { jobId: result.jobId, error: String(error) });
+    }
+  }
+
+  /**
+   * Drive the worker through the service so every ingestion produces its
+   * Artifact event, rather than calling the worker loop directly.
+   * @param maxRounds - safety bound.
+   * @returns rounds executed.
+   */
+  async runUntilIdle(maxRounds = 50): Promise<number> {
+    for (let round = 0; round < maxRounds; round += 1) {
+      const result = await this.runWorkerOnce();
+      if (result.task === null) {
+        if (this.listJobs(['submitted', 'submitted_unconfirmed', 'running', 'output_ready', 'reconcile_required']).length === 0) {
+          return round + 1;
+        }
+      }
+    }
+    throw new MeshError('INTERNAL', 'worker did not reach idle within the round bound', { maxRounds });
   }
 
   startScheduler(): void {
@@ -1373,12 +1487,34 @@ export class MeshService {
     return this.#requireJobs().query(jobId);
   }
 
-  reconcileJob(jobId: string): Promise<MeshTaskView> {
-    return this.#requireJobs().reconcile(jobId);
+  async reconcileJob(jobId: string): Promise<MeshTaskView> {
+    const task = await this.#requireJobs().reconcile(jobId);
+    await this.#recordArtifactIfIngested(jobId);
+    return task;
   }
 
-  collectJob(jobId: string): Promise<IngestionResult> {
-    return this.#requireJobs().collect(jobId);
+  async collectJob(jobId: string): Promise<IngestionResult> {
+    const result = await this.#requireJobs().collect(jobId);
+    this.#recordArtifactIngested(result);
+    return result;
+  }
+
+  async #recordArtifactIfIngested(jobId: string): Promise<void> {
+    const job = this.#requireStore().getJob(jobId);
+    if (job === undefined) return;
+    // Reconcile adopts remote state; collection stays an explicit verified step.
+    // Only an already-ingested job produces an Artifact event here.
+    if (job.status !== 'ingested') return;
+    const artifacts = this.#requireStore().listArtifacts(jobId);
+    this.#recordArtifactIngested({
+      jobId,
+      task: this.#requireScheduler().get(job.taskId),
+      artifacts: artifacts.map(artifact => ({
+        path: artifact.relativePath, sha256: artifact.sha256, sizeBytes: artifact.sizeBytes,
+      })),
+      artifactManifestDigest: this.#requireStore().getOutcome(jobId)?.artifactManifestDigest ?? job.manifestDigest,
+      outcomePath: null,
+    });
   }
 
   abandonJob(jobId: string, reason: string): MeshTaskView {
@@ -1559,6 +1695,11 @@ export class MeshService {
       const jobs = this.#requireJobs().recover();
       const gpu = this.#requireGpu().reconcile();
       const workspaces = await this.#requireWorkspaces().recover();
+      // Re-establish the Artifact event for jobs that were already ingested when
+      // the process stopped. The dedupe key makes this idempotent across restarts.
+      for (const job of this.#requireJobs().list(['ingested'])) {
+        await this.#recordArtifactIfIngested(job.jobId);
+      }
       this.#logger.warn('startup recovery completed', {
         schedulerReconciled: scheduler.reconciledRemote.length,
         schedulerFailed: scheduler.failedLocal.length,

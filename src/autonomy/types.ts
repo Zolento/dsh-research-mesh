@@ -46,6 +46,21 @@ export type TriggerKind =
 /** Durable disposition of a Trigger. */
 export type TriggerDisposition = 'accepted' | 'candidate' | 'ignored' | 'blocked' | 'duplicate' | 'attached';
 
+/** What kind of work a Ticket represents. */
+export type TicketKind = 'engineering' | 'research';
+
+/** Authority proof for a scientific completion, produced by RLP checks. */
+export interface CompletionProof {
+  readonly ticketId: string;
+  readonly experimentId: string;
+  readonly stateVersion: string;
+  readonly stateDigest: string;
+  readonly decision: string;
+  readonly verifiedAt: string;
+  /** Digest of the RLP decision output used for this proof. */
+  readonly proofDigest: string;
+}
+
 /** Ticket working state. */
 export type TicketStatus =
   | 'open'
@@ -81,6 +96,9 @@ export interface TriggerRecord {
   readonly receivedAt: string;
   readonly disposition: TriggerDisposition;
   readonly ticketId: string | null;
+  /** Principal that recorded the Trigger, for audit. */
+  readonly principalKind: string;
+  readonly principalId: string;
 }
 
 /** Persistent authorization derived from a Trigger and the current Policy. */
@@ -96,6 +114,8 @@ export interface MandateRecord {
   readonly resourceCeilingJson: string;
   readonly rlpScope: string;
   readonly policyVersion: string;
+  /** Digest of the policy document the Mandate was issued under. */
+  readonly policyDigest: string;
   readonly autonomous: boolean;
   readonly createdAt: string;
   readonly revokedAt: string | null;
@@ -107,6 +127,7 @@ export interface TicketRecord {
   readonly ticketId: string;
   readonly projectId: string;
   readonly routeId: string;
+  readonly kind: TicketKind;
   readonly title: string;
   readonly objective: string;
   readonly status: TicketStatus;
@@ -121,6 +142,8 @@ export interface TicketRecord {
   readonly updatedAt: string;
   readonly endedAt: string | null;
   readonly endReason: TicketEndReason | null;
+  /** Digest of the RLP completion proof, when the ticket ended completed. */
+  readonly outcomeRef: string | null;
 }
 
 /** One execution binding of a Ticket; a Ticket may have several over time. */
@@ -162,6 +185,10 @@ export interface EffectRecord {
   readonly maxAttempts: number;
   readonly nextRunAt: string;
   readonly lastError: string | null;
+  /** Worker that currently owns the claim, when running. */
+  readonly owner: string | null;
+  readonly claimedAt: string | null;
+  readonly leaseExpiresAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -184,6 +211,8 @@ export interface AutonomyPolicy {
   readonly resourceCeiling: { readonly gpuIds: readonly number[]; readonly maxConcurrentJobs: number };
   /** RLP execution scope for autonomous work. */
   readonly rlpScope: 'discovery_only' | 'strategy' | 'full';
+  /** Monotonic policy digest, computed when persisted. */
+  readonly digest?: string;
 }
 
 /** Input for recording one Trigger. */
@@ -225,4 +254,6 @@ export interface CreateTicketInput {
   readonly triggerId: string;
   /** Explicit human authorization; autonomous creation must leave this false. */
   readonly explicit: boolean;
+  /** Engineering by default; research completion needs an RLP proof. */
+  readonly kind?: TicketKind;
 }

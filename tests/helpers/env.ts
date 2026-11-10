@@ -184,6 +184,7 @@ export async function makeService(project: TempProject, options: {
   sessionBinding?: 'external' | 'dsh';
   gpuProbe?: import('../../src/resources/gpu.ts').GpuProbe;
   transport?: import('../../src/executors/transport.ts').JobTransport;
+  completionVerifier?: import('../../src/rlp/outcome.ts').CompletionVerifier;
 } = {}): Promise<{
   service: import('../../src/service.ts').MeshService;
   host: TestSessionHost;
@@ -206,6 +207,7 @@ export async function makeService(project: TempProject, options: {
     modelCatalog: models.catalog,
     modelSettings: models.settings,
     ...(options.transport === undefined ? {} : { transport: options.transport }),
+    ...(options.completionVerifier === undefined ? {} : { completionVerifier: options.completionVerifier }),
     gpuProbe: options.gpuProbe ?? new StaticGpuProbe({
       'workstation:0': 'available',
       'workstation:1': 'available',

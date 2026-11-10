@@ -21,6 +21,7 @@ import type { MeshStore } from '../storage/mesh-store.ts';
 import type {
   AssignmentRecord,
   AutonomyPolicy,
+  CompletionProof,
   CreateTicketInput,
   MandateRecord,
   ReceiveResult,
@@ -32,6 +33,8 @@ import type {
 } from './types.ts';
 import type { AutonomyStore } from './store.ts';
 import type { EffectsRunner } from './effects.ts';
+import { authorizeAction, type AuthorizedAction } from './authorize.ts';
+import { SYSTEM_PRINCIPAL, isHuman, requireHuman, requireTrusted, type Principal } from './principal.ts';
 
 /** Default policy: observe-only, no autonomous execution. */
 export const DEFAULT_AUTONOMY_POLICY: AutonomyPolicy = {
@@ -68,6 +71,12 @@ export interface AutonomyEngineOptions {
   readonly policy?: AutonomyPolicy;
   readonly now?: () => number;
   readonly handlers?: AutonomyEffectHandlers;
+  /** Project status lookup; the service supplies the real registry. */
+  readonly projectStatus?: (projectId: string) => 'active' | 'paused' | 'archived' | 'registered';
+  /** Whether the project's RLP root permits formal runs. */
+  readonly rlpFormalRun?: (projectId: string) => boolean;
+  /** Group lookup; the service supplies the real Mesh registry. */
+  readonly groupFacts?: (teamId: string) => { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
 }
 
 /** Operations an explicit Mandate may carry. */
@@ -88,6 +97,9 @@ export class AutonomyEngine {
   readonly #effects: EffectsRunner;
   readonly #meshStore: MeshStore | undefined;
   readonly #now: () => number;
+  readonly #projectStatus: (projectId: string) => 'active' | 'paused' | 'archived' | 'registered';
+  readonly #rlpFormalRun: (projectId: string) => boolean;
+  readonly #groupFacts: (teamId: string) => { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
   #policy: AutonomyPolicy;
 
   /**
@@ -98,7 +110,16 @@ export class AutonomyEngine {
     this.#effects = options.effects;
     this.#meshStore = options.meshStore;
     this.#now = options.now ?? Date.now;
-    this.#policy = options.policy ?? DEFAULT_AUTONOMY_POLICY;
+    this.#projectStatus = options.projectStatus ?? (() => 'active');
+    this.#rlpFormalRun = options.rlpFormalRun ?? (() => false);
+    this.#groupFacts = options.groupFacts ?? ((teamId) => options.store.groupFacts(teamId));
+    const persisted = options.store.loadPolicy();
+    if (persisted !== undefined) {
+      const parsed = JSON.parse(persisted.json) as AutonomyPolicy;
+      this.#policy = { ...parsed, version: persisted.version, digest: persisted.digest };
+    } else {
+      this.#policy = this.#persistPolicy(options.policy ?? DEFAULT_AUTONOMY_POLICY);
+    }
     const handlers = options.handlers ?? {};
     this.#effects.register('notice', {
       retry: 'safe',
@@ -124,13 +145,37 @@ export class AutonomyEngine {
   }
 
   /**
-   * Replace the policy. Live Tickets keep their Mandates; autonomous resumes
-   * are revalidated against this version.
+   * Replace the policy. The new version is monotonic and persisted; live
+   * Tickets keep their Mandates, autonomous resumes are revalidated.
    * @param policy - new policy document.
+   * @returns the stored policy with its digest.
    */
-  setPolicy(policy: AutonomyPolicy): void {
-    this.#policy = policy;
-    this.#event('policy', policy.version, 'policy-changed', { mode: policy.mode, version: policy.version });
+  setPolicy(policy: AutonomyPolicy): AutonomyPolicy {
+    const current = this.#policy;
+    const next = this.#nextVersion(current.version, policy.version);
+    this.#policy = this.#persistPolicy({ ...policy, version: next });
+    this.#event('policy', this.#policy.version, 'policy-changed', {
+      mode: this.#policy.mode, version: this.#policy.version, digest: this.#policy.digest,
+    });
+    return this.#policy;
+  }
+
+  #nextVersion(current: string, requested: string): string {
+    const number = (value: string): number => {
+      const match = /^policy-(\d+)$/.exec(value);
+      return match === null ? 0 : Number(match[1]);
+    };
+    const currentNumber = number(current);
+    const requestedNumber = number(requested);
+    return `policy-${Math.max(currentNumber + 1, requestedNumber > currentNumber ? requestedNumber : 0)}`;
+  }
+
+  #persistPolicy(policy: AutonomyPolicy): AutonomyPolicy {
+    const { digest: _ignored, ...plain } = policy;
+    const digest = sha256Text(canonicalJson(JSON.parse(JSON.stringify(plain)) as CanonicalValue));
+    const stored: AutonomyPolicy = { ...plain, digest };
+    this.#store.savePolicy(stored.version, digest, JSON.stringify(stored));
+    return stored;
   }
 
   /**
@@ -138,8 +183,16 @@ export class AutonomyEngine {
    * @param input - source event.
    * @returns stored Trigger and what happened to it.
    */
-  receiveTrigger(input: TriggerInput): ReceiveResult {
+  receiveTrigger(input: TriggerInput, principal: Principal = SYSTEM_PRINCIPAL): ReceiveResult {
     if (input.projectId.trim() === '') throw new MeshError('INVALID_ARGUMENT', 'projectId is required');
+    // Untrusted callers can only report chat-like messages, never system events
+    // or human authorization. A request body cannot promote itself.
+    const explicit = input.explicit === true && principal.authenticated && isHuman(principal);
+    if (!principal.authenticated && input.source !== 'session') {
+      throw new MeshError('PRINCIPAL_UNTRUSTED', 'unverified callers may only report session messages', {
+        source: input.source, principal: principal.kind, via: principal.via,
+      });
+    }
     const dedupeKey = input.dedupeKey ?? `${input.source}:${input.eventId}`;
     const existing = this.#store.getTriggerByDedupe(dedupeKey);
     if (existing !== undefined) {
@@ -162,22 +215,25 @@ export class AutonomyEngine {
       receivedAt: nowIso(),
       disposition: 'blocked',
       ticketId: input.ticketId ?? null,
+      principalKind: principal.kind,
+      principalId: principal.id,
     };
     if (!this.#store.insertTrigger(trigger)) {
       const raced = this.#store.getTriggerByDedupe(dedupeKey) ?? trigger;
       return { trigger: raced, disposition: 'duplicate', ticket: null, reason: 'a concurrent intake stored the same trigger' };
     }
-    const decided = this.#decide({ trigger, explicit: input.explicit === true, input });
+    this.#store.upsertThread(trigger.threadKey, trigger.projectId);
+    const decided = this.#decide({ trigger, explicit, input, principal });
     this.#store.setTriggerDisposition(trigger.triggerId, decided.disposition, decided.ticket?.ticketId ?? null);
     return { ...decided, trigger: this.#store.getTrigger(trigger.triggerId) ?? trigger };
   }
 
-  #decide(args: { trigger: TriggerRecord; explicit: boolean; input: TriggerInput }): {
+  #decide(args: { trigger: TriggerRecord; explicit: boolean; input: TriggerInput; principal: Principal }): {
     disposition: ReceiveResult['disposition'];
     ticket: TicketRecord | null;
     reason: string | null;
   } {
-    const { trigger, explicit, input } = args;
+    const { trigger, explicit, input, principal } = args;
     const allowedSource = this.#policy.allowedSources.includes(trigger.source);
     const actorAllowed = this.#policy.allowedActors.length === 0
       || (trigger.actor !== null && this.#policy.allowedActors.includes(trigger.actor));
@@ -190,6 +246,12 @@ export class AutonomyEngine {
       const ticket = this.#store.getTicket(input.ticketId);
       if (ticket === undefined) {
         return { disposition: 'blocked', ticket: null, reason: 'trigger names an unknown ticket' };
+      }
+      if (ticket.projectId !== trigger.projectId) {
+        return { disposition: 'blocked', ticket: null, reason: 'trigger and ticket belong to different projects' };
+      }
+      if (ticket.status === 'ended' && ticket.endReason === 'stopped') {
+        return { disposition: 'blocked', ticket, reason: 'ticket was stopped by a person; it receives nothing' };
       }
       this.#store.upsertSubscription(ticket.ticketId, trigger.threadKey, 'owned');
       // A compute-completion event wakes a parked ticket back to open work; it
@@ -212,7 +274,8 @@ export class AutonomyEngine {
         objective: String((input.payload as Record<string, unknown> | undefined)?.objective ?? ''),
         explicit: true,
         ...(this.#payloadString(input, 'groupId') === null ? {} : { groupId: this.#payloadString(input, 'groupId') as string }),
-      });
+        ...((input.payload as Record<string, unknown> | undefined)?.kind === 'research' ? { kind: 'research' as const } : {}),
+      }, principal);
       return { disposition: 'accepted', ticket, reason: null };
     }
     if (this.#policy.mode === 'off') {
@@ -229,7 +292,7 @@ export class AutonomyEngine {
       routeId: String((input.payload as Record<string, unknown> | undefined)?.routeId ?? 'A'),
       title: String((input.payload as Record<string, unknown> | undefined)?.title ?? `Autonomous ${trigger.kind}`),
       explicit: false,
-    });
+    }, principal);
     return { disposition: 'accepted', ticket, reason: 'accepted by an auto-mode rule within the resource ceiling' };
   }
 
@@ -244,7 +307,7 @@ export class AutonomyEngine {
    * @param input - ticket definition and authorizing trigger.
    * @returns the durable Ticket.
    */
-  createTicket(input: CreateTicketInput): TicketRecord {
+  createTicket(input: CreateTicketInput, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
     const trigger = this.#store.getTrigger(input.triggerId);
     if (trigger === undefined) throw new MeshError('INVALID_ARGUMENT', 'ticket authorization names an unknown trigger', { triggerId: input.triggerId });
     if (trigger.projectId !== input.projectId) {
@@ -252,20 +315,28 @@ export class AutonomyEngine {
         triggerProjectId: trigger.projectId, projectId: input.projectId,
       });
     }
-    return this.#createTicketFromTrigger(trigger, input);
+    return this.#createTicketFromTrigger(trigger, input, principal);
   }
 
-  #createTicketFromTrigger(trigger: TriggerRecord, input: Omit<CreateTicketInput, 'triggerId'>): TicketRecord {
+  #createTicketFromTrigger(trigger: TriggerRecord, input: Omit<CreateTicketInput, 'triggerId'>, principal: Principal): TicketRecord {
     const idempotencyKey = input.idempotencyKey ?? `trigger:${trigger.triggerId}`;
+    const autonomous = !input.explicit;
+    if (input.explicit) requireHuman(principal, 'creating an explicit ticket');
     const existing = this.#store.getTicketByIdempotency(idempotencyKey);
     if (existing !== undefined) return existing;
+    if (autonomous && this.#policy.mode !== 'auto') {
+      throw new MeshError('AUTONOMY_DENIED', 'autonomous ticket creation requires auto mode', { mode: this.#policy.mode });
+    }
+    authorizeAction({
+      principal,
+      action: 'ticket.create',
+      policy: this.#policy,
+      project: { projectId: input.projectId, status: this.#projectStatus(input.projectId) },
+      rlp: { formalRunAllowed: this.#rlpFormalRun(input.projectId) },
+    });
     const open = this.#store.countOpenTickets(input.projectId);
     if (open >= this.#policy.maxOpenTickets) {
       throw new MeshError('POLICY_BLOCKED', 'open ticket ceiling reached', { projectId: input.projectId, open, max: this.#policy.maxOpenTickets });
-    }
-    const autonomous = !input.explicit;
-    if (autonomous && this.#policy.mode !== 'auto') {
-      throw new MeshError('AUTONOMY_DENIED', 'autonomous ticket creation requires auto mode', { mode: this.#policy.mode });
     }
     const now = nowIso();
     const operations = autonomous ? AUTONOMOUS_OPERATIONS : EXPLICIT_OPERATIONS;
@@ -287,6 +358,7 @@ export class AutonomyEngine {
       }),
       rlpScope: autonomous ? this.#policy.rlpScope : 'full',
       policyVersion: this.#policy.version,
+      policyDigest: this.#policy.digest ?? '',
       autonomous,
       createdAt: now,
       revokedAt: null,
@@ -299,6 +371,8 @@ export class AutonomyEngine {
       title: input.title,
       objective: input.objective ?? input.title,
       status: 'open',
+      kind: input.kind ?? 'engineering',
+      outcomeRef: null,
       mandateId: mandate.mandateId,
       groupId: input.groupId ?? null,
       priority: input.priority ?? 0,
@@ -332,11 +406,18 @@ export class AutonomyEngine {
    * @param options - optional task/session.
    * @returns the pending Assignment.
    */
-  assign(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
+  assign(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') {
       throw new MeshError('TICKET_STATE_INVALID', 'cannot assign an ended ticket', { ticketId, endReason: ticket.endReason });
     }
+    if (this.#groupFacts(teamId) === undefined) {
+      throw new MeshError('TEAM_NOT_FOUND', `unknown group ${teamId}`, { teamId });
+    }
+    this.#authorizeTicket('ticket.assign', principal, ticket, {
+      groupTeamId: teamId,
+      rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
+    });
     if (this.#store.activeAssignment(ticketId) !== undefined) {
       throw new MeshError('TICKET_STATE_INVALID', 'ticket already has an active assignment', { ticketId });
     }
@@ -374,12 +455,16 @@ export class AutonomyEngine {
    * @param options - task, job or session attached to this attempt.
    * @returns updated Assignment.
    */
-  startAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
+  startAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
     const assignment = this.#requireAssignment(assignmentId);
     if (assignment.status !== 'pending') {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment is not pending', { assignmentId, status: assignment.status });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
+    this.#authorizeTicket('assignment.start', principal, ticket, {
+      groupTeamId: assignment.teamId,
+      assignment,
+    });
     const now = nowIso();
     const updated: AssignmentRecord = {
       ...assignment,
@@ -409,12 +494,16 @@ export class AutonomyEngine {
     jobId?: string;
     errorCode?: string;
     errorMessage?: string;
-  }): AssignmentRecord {
+  }, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
     const assignment = this.#requireAssignment(assignmentId);
     if (assignment.status === 'ended') {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment already ended', { assignmentId });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
+    this.#authorizeTicket('assignment.finish', principal, ticket, {
+      groupTeamId: assignment.teamId,
+      assignment,
+    });
     const now = nowIso();
     const updated: AssignmentRecord = {
       ...assignment,
@@ -450,8 +539,11 @@ export class AutonomyEngine {
    * @param assignmentId - assignment that submitted it.
    * @returns updated Ticket.
    */
-  markCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
+  markCompute(ticketId: string, jobId: string, assignmentId?: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
+    this.#authorizeTicket('ticket.mark_compute', principal, ticket, {
+      rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
+    });
     const now = nowIso();
     const updated: TicketRecord = { ...ticket, status: 'waiting_compute', waitingReason: `compute job ${jobId}`, updatedAt: now };
     this.#store.transaction(() => {
@@ -493,7 +585,7 @@ export class AutonomyEngine {
    * @param options - explicit human authorization and authorizing trigger.
    * @returns updated Ticket.
    */
-  resumeTicket(ticketId: string, options: { explicit: boolean; triggerId?: string } = { explicit: false }): TicketRecord {
+  resumeTicket(ticketId: string, options: { explicit: boolean; triggerId?: string } = { explicit: false }, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status !== 'ended' && ticket.status !== 'waiting_human') {
       throw new MeshError('TICKET_STATE_INVALID', 'ticket is not resumable', { ticketId, status: ticket.status });
@@ -504,9 +596,11 @@ export class AutonomyEngine {
     const mandate = this.#store.getMandate(ticket.mandateId);
     if (mandate === undefined) throw new MeshError('MANDATE_REVOKED', 'ticket mandate is missing', { ticketId });
     if (mandate.revokedAt !== null) throw new MeshError('MANDATE_REVOKED', 'ticket mandate was revoked', { ticketId });
+    this.#authorizeTicket('ticket.resume', principal, ticket);
     const policyChanged = mandate.policyVersion !== this.#policy.version;
-    if (policyChanged && !options.explicit) {
-      throw new MeshError('MANDATE_REVALIDATION_REQUIRED', 'policy changed; resume needs explicit re-authorization', {
+    const explicitResume = options.explicit === true && isHuman(principal);
+    if (policyChanged && !explicitResume) {
+      throw new MeshError('MANDATE_REVALIDATION_REQUIRED', 'policy changed; resume needs a verified human re-authorization', {
         ticketId, mandatePolicy: mandate.policyVersion, policy: this.#policy.version,
       });
     }
@@ -536,9 +630,12 @@ export class AutonomyEngine {
    * @param reason - audit reason.
    * @returns updated Ticket.
    */
-  stopTicket(ticketId: string, by: string, reason: string): TicketRecord {
+  stopTicket(ticketId: string, by: string, reason: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') return ticket;
+    // Stopping never expands authority, so an untrusted web operator may do it;
+    // the revoke is recorded under that principal's identity.
+    this.#authorizeTicket('ticket.stop', principal, ticket);
     const now = nowIso();
     const updated: TicketRecord = {
       ...ticket, status: 'ended', endedAt: now, endReason: 'stopped', waitingReason: reason, updatedAt: now,
@@ -563,13 +660,47 @@ export class AutonomyEngine {
    * @param by - acting principal.
    * @returns updated Ticket.
    */
-  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by: string): TicketRecord {
+  endTicket(
+    ticketId: string,
+    reason: 'completed' | 'failed' | 'cancelled',
+    by: string,
+    principal: Principal = SYSTEM_PRINCIPAL,
+    proof?: CompletionProof,
+  ): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') return ticket;
+    this.#authorizeTicket('ticket.end', principal, ticket, {
+      ...(proof === undefined ? {} : { hasCompletionProof: true }),
+    });
+    if (reason === 'completed') {
+      requireTrusted(principal, 'ending a ticket as completed');
+      if (ticket.kind === 'research') {
+        if (proof === undefined) {
+          throw new MeshError('RLP_GATE_HOLD', 'a research ticket cannot complete without an RLP outcome proof', {
+            ticketId, status: ticket.status,
+          });
+        }
+        if (proof.ticketId !== ticketId || proof.experimentId.trim() === ''
+          || proof.stateDigest.trim() === '' || proof.proofDigest.trim() === '') {
+          throw new MeshError('RLP_GATE_HOLD', 'the RLP completion proof is incomplete or for another ticket', {
+            ticketId, proofTicket: proof.ticketId,
+          });
+        }
+      }
+    }
     const now = nowIso();
-    const updated: TicketRecord = { ...ticket, status: 'ended', endedAt: now, endReason: reason, updatedAt: now };
+    const updated: TicketRecord = {
+      ...ticket,
+      status: 'ended',
+      endedAt: now,
+      endReason: reason,
+      updatedAt: now,
+      outcomeRef: reason === 'completed' && proof !== undefined ? proof.proofDigest : ticket.outcomeRef,
+    };
     this.#store.updateTicket(updated);
-    this.#event('ticket', ticketId, 'ended', { reason, by });
+    this.#event('ticket', ticketId, 'ended', {
+      reason, by, principal: principal.kind, proof: proof?.proofDigest ?? null,
+    });
     return updated;
   }
 
@@ -579,11 +710,22 @@ export class AutonomyEngine {
    * @param threadKey - thread identity.
    * @param mode - `owned` grants follow-up handling; `context` grants nothing.
    */
-  subscribe(ticketId: string, threadKey: string, mode: SubscriptionMode): void {
+  subscribe(ticketId: string, threadKey: string, mode: SubscriptionMode, principal: Principal = SYSTEM_PRINCIPAL): void {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended' && mode === 'owned') {
       throw new MeshError('TICKET_STATE_INVALID', 'an ended ticket cannot own a new follow-up thread', { ticketId });
     }
+    const owner = this.#store.threadProject(threadKey);
+    if (owner !== undefined && owner !== ticket.projectId) {
+      throw new MeshError('POLICY_BLOCKED', 'thread belongs to another project', {
+        ticketId, threadKey, threadProject: owner, projectId: ticket.projectId,
+      });
+    }
+    const existing = this.#store.listSubscriptions(ticketId).find(row => row.threadKey === threadKey);
+    this.#authorizeTicket('subscription.add', principal, ticket, {
+      subscriptionMode: mode,
+      ...(existing === undefined ? {} : { existingSubscription: existing.mode }),
+    });
     this.#store.upsertSubscription(ticketId, threadKey, mode);
     this.#event('ticket', ticketId, 'subscribed', { threadKey, mode });
   }
@@ -620,11 +762,43 @@ export class AutonomyEngine {
       ...previous,
       mandateId,
       policyVersion: this.#policy.version,
+      policyDigest: this.#policy.digest ?? '',
       createdAt: at,
       revokedAt: null,
       revokeReason: null,
     });
     return mandateId;
+  }
+
+  #authorizeTicket(
+    action: AuthorizedAction,
+    principal: Principal,
+    ticket: TicketRecord,
+    extra: {
+      groupTeamId?: string;
+      assignment?: AssignmentRecord;
+      rlp?: { formalRunAllowed: boolean; requestedScope?: 'discovery_only' | 'strategy' | 'full' };
+      existingSubscription?: SubscriptionMode;
+      subscriptionMode?: SubscriptionMode;
+      hasCompletionProof?: boolean;
+    } = {},
+  ): void {
+    const mandate = this.#store.getMandate(ticket.mandateId);
+    const group = extra.groupTeamId === undefined ? undefined : this.#groupFacts(extra.groupTeamId);
+    authorizeAction({
+      principal,
+      action,
+      policy: this.#policy,
+      project: { projectId: ticket.projectId, status: this.#projectStatus(ticket.projectId) },
+      ticket,
+      ...(mandate === undefined ? {} : { mandate }),
+      ...(group === undefined ? {} : { group }),
+      ...(extra.assignment === undefined ? {} : { assignment: extra.assignment }),
+      ...(extra.rlp === undefined ? {} : { rlp: extra.rlp }),
+      ...(extra.existingSubscription === undefined ? {} : { existingSubscription: extra.existingSubscription }),
+      ...(extra.subscriptionMode === undefined ? {} : { subscriptionMode: extra.subscriptionMode }),
+      ...(extra.hasCompletionProof === undefined ? {} : { hasCompletionProof: extra.hasCompletionProof }),
+    });
   }
 
   #requireAssignment(assignmentId: string): AssignmentRecord {

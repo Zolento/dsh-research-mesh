@@ -18,6 +18,7 @@ import type {
   MeshLimits,
   RlpConfig,
   RsiConfig,
+  SecurityConfig,
   SessionBinding,
   SshConfig,
   WorkerConfig,
@@ -390,6 +391,13 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     };
   }
 
+  const securityRaw = optionalObject(input.security, 'security') ?? {};
+  const adminToken = optionalString(securityRaw.adminToken, 'security.adminToken');
+  if (adminToken !== undefined && adminToken.length < 16) {
+    invalid('security.adminToken must be at least 16 characters', { field: 'security.adminToken' });
+  }
+  const security = { ...(adminToken === undefined ? {} : { adminToken }) };
+
   const logLevelRaw = optionalString(input.logLevel, 'logLevel') ?? 'info';
   if (!['debug', 'info', 'warn', 'error'].includes(logLevelRaw)) {
     invalid('logLevel must be debug, info, warn or error', { logLevel: logLevelRaw });
@@ -431,6 +439,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     rsi,
     artifacts,
     allowFakeTransport,
+    security,
     autoStartScheduler: booleanField(input.autoStartScheduler, 'autoStartScheduler', false),
     startupRecovery: booleanField(input.startupRecovery, 'startupRecovery', true),
     logLevel: logLevelRaw as MeshConfig['logLevel'],

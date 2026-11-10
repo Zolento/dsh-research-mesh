@@ -41,7 +41,7 @@ function isStatus(value: unknown): value is RlpStorageStatus {
 export class RlpStorageResolver {
   readonly #skill: RlpSkill;
   readonly #timeoutMs: number;
-  #cache: Map<string, RlpStorageResolution> = new Map();
+  #cache: Map<string, { resolution: RlpStorageResolution; signature: string }> = new Map();
 
   /**
    * @param skill - discovered RLP skill.
@@ -58,8 +58,11 @@ export class RlpStorageResolver {
    * @returns normalized resolution.
    */
   async resolve(projectRoot: string): Promise<RlpStorageResolution> {
+    // A migration, rollback or root move must not be served from an old cache:
+    // the layout signature covers existence and mtime of both roots.
+    const signature = this.#layoutSignature(projectRoot);
     const cached = this.#cache.get(projectRoot);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && cached.signature === signature) return cached.resolution;
     const result = await runPython({
       python: this.#skill.python,
       script: join(this.#skill.skillPath, 'scripts', 'rlp_paths.py'),
@@ -95,8 +98,16 @@ export class RlpStorageResolver {
       formalRunAllowed: status === 'READY',
       writable: status === 'READY' || status === 'NEW_PROJECT',
     };
-    this.#cache.set(projectRoot, resolution);
+    this.#cache.set(projectRoot, { resolution, signature });
     return resolution;
+  }
+
+  #layoutSignature(projectRoot: string): string {
+    const part = (path: string): string => {
+      const stat = statSync(path, { throwIfNoEntry: false });
+      return stat === undefined ? '-' : `${stat.isDirectory() ? 'd' : 'f'}:${stat.mtimeMs}`;
+    };
+    return `${part(join(projectRoot, RLP_RUNTIME_ROOT))}|${part(join(projectRoot, RLP_LEGACY_ROOT))}`;
   }
 
   /** Drop the cached resolution, e.g. after an explicit migration by the operator. */

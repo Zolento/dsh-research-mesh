@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeService, makeTempProject } from '../helpers/env.ts';
 import type { MeshError } from '../../src/errors.ts';
+import { humanPrincipal } from '../../src/autonomy/principal.ts';
 
 const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH
   ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
@@ -68,7 +69,7 @@ test('an explicit trigger creates a ticket that the workbench projects', opts, a
       explicit: true,
       actor: 'alice',
       payload: { routeId: 'A', title: 'review the R8 evidence' },
-    });
+    }, humanPrincipal('alice'));
     assert.equal(received.disposition, 'accepted');
     assert.ok(received.ticket);
     const workbench = await service.projectWorkbench(created.projectId);
