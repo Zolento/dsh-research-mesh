@@ -381,6 +381,9 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
   }
   const sessionBinding = sessionBindingRaw as SessionBinding;
 
+  const defaultProvider = optionalString(input.defaultProvider, 'defaultProvider')
+    ?? process.env.MESH_DEFAULT_PROVIDER
+    ?? 'deepseek-pool';
   const agentRaw = optionalObject(input.agent, 'agent');
   let agent: { provider: string; model: string } | undefined;
   if (agentRaw !== undefined) {
@@ -423,6 +426,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     nativeMembers,
     sessionBinding,
     ...(agent === undefined ? {} : { agent }),
+    defaultProvider,
     limits,
     workers,
     conda,

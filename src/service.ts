@@ -922,6 +922,13 @@ export class MeshService {
       }
     }
     if (provider === undefined || model === undefined) {
+      // Prefer the deployment's default provider (API Pool) over an arbitrary
+      // first catalog entry.
+      const catalog = await this.#requireModels().listCatalog();
+      const chosen = catalog.find(entry => entry.provider === this.#config.defaultProvider) ?? catalog[0];
+      if (chosen !== undefined) { provider = chosen.provider; model = chosen.model }
+    }
+    if (provider === undefined || model === undefined) {
       throw new MeshError('MODEL_CONFIG_INVALID', 'no model is configured for the control session', { projectId });
     }
     const created = await this.#requireTeams().sessionHost.createControl({

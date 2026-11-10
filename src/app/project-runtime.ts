@@ -228,8 +228,11 @@ export class ProjectRuntime {
       // resident control session; an explicit route always wins.
       try {
         const catalog = await this.models.listCatalog();
-        const first = catalog[0];
-        if (first !== undefined) { provider = provider ?? first.provider; model = model ?? first.model }
+        // The deployment declares a preferred provider (API Pool by default), so
+        // a project control session does not silently land on another vendor.
+        const preferred = catalog.find(entry => entry.provider === this.config.defaultProvider);
+        const chosen = preferred ?? catalog[0];
+        if (chosen !== undefined) { provider = provider ?? chosen.provider; model = model ?? chosen.model }
       } catch { /* fall through to the explicit failure below */ }
     }
     if (provider === undefined || model === undefined) {

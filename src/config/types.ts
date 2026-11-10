@@ -137,6 +137,11 @@ export interface MeshConfig {
   readonly sessionBinding: SessionBinding;
   /** Optional default model route for Mesh-created root sessions. */
   readonly agent?: { readonly provider: string; readonly model: string };
+  /**
+   * Preferred provider when no explicit route is configured. Mesh-created
+   * sessions (control, captain, member) use it before any other catalog route.
+   */
+  readonly defaultProvider: string;
   /** Limits. */
   readonly limits: MeshLimits;
   /** Workers keyed by id. */

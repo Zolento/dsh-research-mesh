@@ -100,3 +100,21 @@ test('each project gets its own runtime: separate database, worker and control s
     second.cleanup();
   }
 });
+
+test('the resident control session prefers the deployment default provider', async () => {
+  const project = makeTempProject({ name: 'rt-provider' });
+  const { service } = await makeService(project, { groups: ['group-a'] });
+  try {
+    const created = service.createProject({ name: 'rt-provider', rsiStateRef: seedState(project.root), repositoryRef: project.source });
+    assert.equal(service.config.defaultProvider, 'deepseek-pool');
+    const runtime = service.runtime(created.projectId);
+    // A catalog that advertises several providers must resolve to the default.
+    const catalog = await runtime.models.listCatalog();
+    assert.ok(catalog.length > 0);
+    const control = await runtime.ensureControlSession();
+    assert.match(control.sessionId, /^test-control-/);
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
