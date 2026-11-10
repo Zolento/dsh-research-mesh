@@ -34,7 +34,6 @@ import type {
 import type { AutonomyStore } from './store.ts';
 import type { EffectsRunner } from './effects.ts';
 import { authorizeAction, type AuthorizedAction } from './authorize.ts';
-import { SYSTEM_PRINCIPAL, isHuman, requireHuman, requireTrusted, type Principal } from './principal.ts';
 
 /** Default policy: observe-only, no autonomous execution. */
 export const DEFAULT_AUTONOMY_POLICY: AutonomyPolicy = {
@@ -183,16 +182,11 @@ export class AutonomyEngine {
    * @param input - source event.
    * @returns stored Trigger and what happened to it.
    */
-  receiveTrigger(input: TriggerInput, principal: Principal = SYSTEM_PRINCIPAL): ReceiveResult {
+  receiveTrigger(input: TriggerInput): ReceiveResult {
     if (input.projectId.trim() === '') throw new MeshError('INVALID_ARGUMENT', 'projectId is required');
-    // Untrusted callers can only report chat-like messages, never system events
-    // or human authorization. A request body cannot promote itself.
-    const explicit = input.explicit === true && principal.authenticated && isHuman(principal);
-    if (!principal.authenticated && input.source !== 'session') {
-      throw new MeshError('PRINCIPAL_UNTRUSTED', 'unverified callers may only report session messages', {
-        source: input.source, principal: principal.kind, via: principal.via,
-      });
-    }
+    // DSH owns the human entry points; Mesh trusts the source it is given and
+    // records the explicit flag as an autonomy boundary, not an identity.
+    const explicit = input.explicit === true;
     const dedupeKey = input.dedupeKey ?? `${input.source}:${input.eventId}`;
     const existing = this.#store.getTriggerByDedupe(dedupeKey);
     if (existing !== undefined) {
@@ -215,25 +209,23 @@ export class AutonomyEngine {
       receivedAt: nowIso(),
       disposition: 'blocked',
       ticketId: input.ticketId ?? null,
-      principalKind: principal.kind,
-      principalId: principal.id,
     };
     if (!this.#store.insertTrigger(trigger)) {
       const raced = this.#store.getTriggerByDedupe(dedupeKey) ?? trigger;
       return { trigger: raced, disposition: 'duplicate', ticket: null, reason: 'a concurrent intake stored the same trigger' };
     }
     this.#store.upsertThread(trigger.threadKey, trigger.projectId);
-    const decided = this.#decide({ trigger, explicit, input, principal });
+    const decided = this.#decide({ trigger, explicit, input });
     this.#store.setTriggerDisposition(trigger.triggerId, decided.disposition, decided.ticket?.ticketId ?? null);
     return { ...decided, trigger: this.#store.getTrigger(trigger.triggerId) ?? trigger };
   }
 
-  #decide(args: { trigger: TriggerRecord; explicit: boolean; input: TriggerInput; principal: Principal }): {
+  #decide(args: { trigger: TriggerRecord; explicit: boolean; input: TriggerInput }): {
     disposition: ReceiveResult['disposition'];
     ticket: TicketRecord | null;
     reason: string | null;
   } {
-    const { trigger, explicit, input, principal } = args;
+    const { trigger, explicit, input } = args;
     const allowedSource = this.#policy.allowedSources.includes(trigger.source);
     const actorAllowed = this.#policy.allowedActors.length === 0
       || (trigger.actor !== null && this.#policy.allowedActors.includes(trigger.actor));
@@ -275,7 +267,7 @@ export class AutonomyEngine {
         explicit: true,
         ...(this.#payloadString(input, 'groupId') === null ? {} : { groupId: this.#payloadString(input, 'groupId') as string }),
         ...((input.payload as Record<string, unknown> | undefined)?.kind === 'research' ? { kind: 'research' as const } : {}),
-      }, principal);
+      });
       return { disposition: 'accepted', ticket, reason: null };
     }
     if (this.#policy.mode === 'off') {
@@ -292,7 +284,7 @@ export class AutonomyEngine {
       routeId: String((input.payload as Record<string, unknown> | undefined)?.routeId ?? 'A'),
       title: String((input.payload as Record<string, unknown> | undefined)?.title ?? `Autonomous ${trigger.kind}`),
       explicit: false,
-    }, principal);
+    });
     return { disposition: 'accepted', ticket, reason: 'accepted by an auto-mode rule within the resource ceiling' };
   }
 
@@ -307,7 +299,7 @@ export class AutonomyEngine {
    * @param input - ticket definition and authorizing trigger.
    * @returns the durable Ticket.
    */
-  createTicket(input: CreateTicketInput, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+  createTicket(input: CreateTicketInput): TicketRecord {
     const trigger = this.#store.getTrigger(input.triggerId);
     if (trigger === undefined) throw new MeshError('INVALID_ARGUMENT', 'ticket authorization names an unknown trigger', { triggerId: input.triggerId });
     if (trigger.projectId !== input.projectId) {
@@ -315,20 +307,18 @@ export class AutonomyEngine {
         triggerProjectId: trigger.projectId, projectId: input.projectId,
       });
     }
-    return this.#createTicketFromTrigger(trigger, input, principal);
+    return this.#createTicketFromTrigger(trigger, input);
   }
 
-  #createTicketFromTrigger(trigger: TriggerRecord, input: Omit<CreateTicketInput, 'triggerId'>, principal: Principal): TicketRecord {
+  #createTicketFromTrigger(trigger: TriggerRecord, input: Omit<CreateTicketInput, 'triggerId'>): TicketRecord {
     const idempotencyKey = input.idempotencyKey ?? `trigger:${trigger.triggerId}`;
     const autonomous = !input.explicit;
-    if (input.explicit) requireHuman(principal, 'creating an explicit ticket');
     const existing = this.#store.getTicketByIdempotency(idempotencyKey);
     if (existing !== undefined) return existing;
     if (autonomous && this.#policy.mode !== 'auto') {
       throw new MeshError('AUTONOMY_DENIED', 'autonomous ticket creation requires auto mode', { mode: this.#policy.mode });
     }
     authorizeAction({
-      principal,
       action: 'ticket.create',
       policy: this.#policy,
       project: { projectId: input.projectId, status: this.#projectStatus(input.projectId) },
@@ -406,7 +396,7 @@ export class AutonomyEngine {
    * @param options - optional task/session.
    * @returns the pending Assignment.
    */
-  assign(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+  assign(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') {
       throw new MeshError('TICKET_STATE_INVALID', 'cannot assign an ended ticket', { ticketId, endReason: ticket.endReason });
@@ -414,7 +404,7 @@ export class AutonomyEngine {
     if (this.#groupFacts(teamId) === undefined) {
       throw new MeshError('TEAM_NOT_FOUND', `unknown group ${teamId}`, { teamId });
     }
-    this.#authorizeTicket('ticket.assign', principal, ticket, {
+    this.#authorizeTicket('ticket.assign', ticket, {
       groupTeamId: teamId,
       rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
     });
@@ -455,13 +445,13 @@ export class AutonomyEngine {
    * @param options - task, job or session attached to this attempt.
    * @returns updated Assignment.
    */
-  startAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+  startAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
     const assignment = this.#requireAssignment(assignmentId);
     if (assignment.status !== 'pending') {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment is not pending', { assignmentId, status: assignment.status });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
-    this.#authorizeTicket('assignment.start', principal, ticket, {
+    this.#authorizeTicket('assignment.start', ticket, {
       groupTeamId: assignment.teamId,
       assignment,
     });
@@ -494,13 +484,13 @@ export class AutonomyEngine {
     jobId?: string;
     errorCode?: string;
     errorMessage?: string;
-  }, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+  }): AssignmentRecord {
     const assignment = this.#requireAssignment(assignmentId);
     if (assignment.status === 'ended') {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment already ended', { assignmentId });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
-    this.#authorizeTicket('assignment.finish', principal, ticket, {
+    this.#authorizeTicket('assignment.finish', ticket, {
       groupTeamId: assignment.teamId,
       assignment,
     });
@@ -539,9 +529,9 @@ export class AutonomyEngine {
    * @param assignmentId - assignment that submitted it.
    * @returns updated Ticket.
    */
-  markCompute(ticketId: string, jobId: string, assignmentId?: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+  markCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
-    this.#authorizeTicket('ticket.mark_compute', principal, ticket, {
+    this.#authorizeTicket('ticket.mark_compute', ticket, {
       rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
     });
     const now = nowIso();
@@ -585,7 +575,7 @@ export class AutonomyEngine {
    * @param options - explicit human authorization and authorizing trigger.
    * @returns updated Ticket.
    */
-  resumeTicket(ticketId: string, options: { explicit: boolean; triggerId?: string } = { explicit: false }, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+  resumeTicket(ticketId: string, options: { explicit: boolean; triggerId?: string } = { explicit: false }): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status !== 'ended' && ticket.status !== 'waiting_human') {
       throw new MeshError('TICKET_STATE_INVALID', 'ticket is not resumable', { ticketId, status: ticket.status });
@@ -596,9 +586,9 @@ export class AutonomyEngine {
     const mandate = this.#store.getMandate(ticket.mandateId);
     if (mandate === undefined) throw new MeshError('MANDATE_REVOKED', 'ticket mandate is missing', { ticketId });
     if (mandate.revokedAt !== null) throw new MeshError('MANDATE_REVOKED', 'ticket mandate was revoked', { ticketId });
-    this.#authorizeTicket('ticket.resume', principal, ticket);
+    this.#authorizeTicket('ticket.resume', ticket);
     const policyChanged = mandate.policyVersion !== this.#policy.version;
-    const explicitResume = options.explicit === true && isHuman(principal);
+    const explicitResume = options.explicit === true;
     if (policyChanged && !explicitResume) {
       throw new MeshError('MANDATE_REVALIDATION_REQUIRED', 'policy changed; resume needs a verified human re-authorization', {
         ticketId, mandatePolicy: mandate.policyVersion, policy: this.#policy.version,
@@ -626,16 +616,14 @@ export class AutonomyEngine {
    * A person stops a Ticket: the Mandate is revoked and pending work is
    * cancelled. No autonomous Trigger can undo this.
    * @param ticketId - ticket identity.
-   * @param by - acting principal.
+   * @param by - acting caller.
    * @param reason - audit reason.
    * @returns updated Ticket.
    */
-  stopTicket(ticketId: string, by: string, reason: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
+  stopTicket(ticketId: string, by: string, reason: string): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') return ticket;
-    // Stopping never expands authority, so an untrusted web operator may do it;
-    // the revoke is recorded under that principal's identity.
-    this.#authorizeTicket('ticket.stop', principal, ticket);
+    this.#authorizeTicket('ticket.stop', ticket);
     const now = nowIso();
     const updated: TicketRecord = {
       ...ticket, status: 'ended', endedAt: now, endReason: 'stopped', waitingReason: reason, updatedAt: now,
@@ -657,23 +645,21 @@ export class AutonomyEngine {
    * End a Ticket normally, e.g. after RLP committed its outcome.
    * @param ticketId - ticket identity.
    * @param reason - `completed`, `failed` or `cancelled`.
-   * @param by - acting principal.
+   * @param by - acting caller.
    * @returns updated Ticket.
    */
   endTicket(
     ticketId: string,
     reason: 'completed' | 'failed' | 'cancelled',
     by: string,
-    principal: Principal = SYSTEM_PRINCIPAL,
     proof?: CompletionProof,
   ): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended') return ticket;
-    this.#authorizeTicket('ticket.end', principal, ticket, {
+    this.#authorizeTicket('ticket.end', ticket, {
       ...(proof === undefined ? {} : { hasCompletionProof: true }),
     });
     if (reason === 'completed') {
-      requireTrusted(principal, 'ending a ticket as completed');
       if (ticket.kind === 'research') {
         if (proof === undefined) {
           throw new MeshError('RLP_GATE_HOLD', 'a research ticket cannot complete without an RLP outcome proof', {
@@ -699,7 +685,7 @@ export class AutonomyEngine {
     };
     this.#store.updateTicket(updated);
     this.#event('ticket', ticketId, 'ended', {
-      reason, by, principal: principal.kind, proof: proof?.proofDigest ?? null,
+      reason, by, proof: proof?.proofDigest ?? null,
     });
     return updated;
   }
@@ -710,7 +696,7 @@ export class AutonomyEngine {
    * @param threadKey - thread identity.
    * @param mode - `owned` grants follow-up handling; `context` grants nothing.
    */
-  subscribe(ticketId: string, threadKey: string, mode: SubscriptionMode, principal: Principal = SYSTEM_PRINCIPAL): void {
+  subscribe(ticketId: string, threadKey: string, mode: SubscriptionMode): void {
     const ticket = this.#store.requireTicket(ticketId);
     if (ticket.status === 'ended' && mode === 'owned') {
       throw new MeshError('TICKET_STATE_INVALID', 'an ended ticket cannot own a new follow-up thread', { ticketId });
@@ -722,7 +708,7 @@ export class AutonomyEngine {
       });
     }
     const existing = this.#store.listSubscriptions(ticketId).find(row => row.threadKey === threadKey);
-    this.#authorizeTicket('subscription.add', principal, ticket, {
+    this.#authorizeTicket('subscription.add', ticket, {
       subscriptionMode: mode,
       ...(existing === undefined ? {} : { existingSubscription: existing.mode }),
     });
@@ -772,7 +758,6 @@ export class AutonomyEngine {
 
   #authorizeTicket(
     action: AuthorizedAction,
-    principal: Principal,
     ticket: TicketRecord,
     extra: {
       groupTeamId?: string;
@@ -786,7 +771,6 @@ export class AutonomyEngine {
     const mandate = this.#store.getMandate(ticket.mandateId);
     const group = extra.groupTeamId === undefined ? undefined : this.#groupFacts(extra.groupTeamId);
     authorizeAction({
-      principal,
       action,
       policy: this.#policy,
       project: { projectId: ticket.projectId, status: this.#projectStatus(ticket.projectId) },

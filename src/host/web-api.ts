@@ -10,7 +10,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { MeshError } from '../errors.ts';
 import type { MeshService } from '../service.ts';
-import { humanPrincipal, isHuman, webPrincipal, type Principal } from '../autonomy/principal.ts';
 
 /** Structural subset of DSH's public `ctx.webServer` service. */
 export interface WebServerLike {
@@ -50,7 +49,6 @@ const STATUS_FOR: Readonly<Record<string, number>> = {
   EXECUTOR_DISABLED: 409,
   SUBAGENT_LIMIT: 409,
   GPU_UNAVAILABLE: 409,
-  PRINCIPAL_UNTRUSTED: 403,
   MANDATE_REVOKED: 409,
   MANDATE_SCOPE_VIOLATION: 409,
   MANDATE_REVALIDATION_REQUIRED: 409,
@@ -149,9 +147,6 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           return;
         }
       }
-      const principal: Principal = service.verifyAdminToken(header(req, 'x-mesh-admin-token'))
-        ? humanPrincipal('web-admin')
-        : webPrincipal();
       if (path === '/bootstrap' && method === 'GET') {
         const projects = service.listProjects();
         const modelSettings = service.getModelSettings();
@@ -334,29 +329,21 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           throw new MeshError('INVALID_ARGUMENT', 'invalid trigger source');
         }
         const kind = stringField(body, 'kind');
-        // The request body cannot promote itself: only a verified operator may
-        // claim a user request; every other HTTP caller is a chat message.
-        if (!isHuman(principal) && source !== 'session') {
-          throw new MeshError('PRINCIPAL_UNTRUSTED', 'unverified HTTP callers may only report session messages', { source });
-        }
         const result = service.recordTrigger({
           source: source as never,
           eventId: stringField(body, 'eventId'),
           projectId: stringField(body, 'projectId'),
           kind: kind as never,
-          explicit: isHuman(principal) && body.explicit === true,
+          explicit: body.explicit === true,
           ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
           ...(typeof body.ticketId === 'string' ? { ticketId: body.ticketId } : {}),
           ...(typeof body.threadKey === 'string' ? { threadKey: body.threadKey } : {}),
           ...(typeof body.payload === 'object' && body.payload !== null ? { payload: body.payload as Record<string, unknown> } : {}),
-        }, principal);
+        });
         send(res, 200, { ok: true, value: result });
         return;
       }
       if (path === '/tickets' && method === 'POST') {
-        if (!isHuman(principal)) {
-          throw new MeshError('PRINCIPAL_UNTRUSTED', 'ticket creation requires a verified operator', { via: principal.via });
-        }
         const body = await readJson(req);
         const ticket = service.createTicket({
           projectId: stringField(body, 'projectId'),
@@ -368,7 +355,7 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           ...(typeof body.groupId === 'string' ? { groupId: body.groupId } : {}),
           ...(typeof body.priority === 'number' ? { priority: body.priority } : {}),
           ...(body.kind === 'research' || body.kind === 'engineering' ? { kind: body.kind } : {}),
-        }, principal);
+        });
         send(res, 200, { ok: true, value: ticket });
         return;
       }
@@ -377,19 +364,19 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         const ticketId = stringField(body, 'ticketId');
         const action = stringField(body, 'action');
         if (action === 'stop') {
-          send(res, 200, { ok: true, value: service.stopTicket(ticketId, typeof body.reason === 'string' ? body.reason : 'operator stop', principal.id, principal) });
+          send(res, 200, { ok: true, value: service.stopTicket(ticketId, typeof body.reason === 'string' ? body.reason : 'operator stop') });
           return;
         }
         if (action === 'resume') {
-          send(res, 200, { ok: true, value: service.resumeTicket(ticketId, isHuman(principal) && body.explicit === true, principal) });
+          send(res, 200, { ok: true, value: service.resumeTicket(ticketId, body.explicit === true) });
           return;
         }
         if (action === 'assign') {
-          send(res, 200, { ok: true, value: service.assignTicket(ticketId, stringField(body, 'teamId'), {}, principal) });
+          send(res, 200, { ok: true, value: service.assignTicket(ticketId, stringField(body, 'teamId')) });
           return;
         }
         if (action === 'start') {
-          send(res, 200, { ok: true, value: service.startTicketAssignment(stringField(body, 'assignmentId'), {}, principal) });
+          send(res, 200, { ok: true, value: service.startTicketAssignment(stringField(body, 'assignmentId')) });
           return;
         }
         if (action === 'finish') {
@@ -399,12 +386,12 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
               ok: body.ok === true,
               ...(typeof body.errorCode === 'string' ? { errorCode: body.errorCode } : {}),
               ...(typeof body.errorMessage === 'string' ? { errorMessage: body.errorMessage } : {}),
-            }, principal),
+            }),
           });
           return;
         }
         if (action === 'wait') {
-          send(res, 200, { ok: true, value: service.waitTicketForHuman(ticketId, stringField(body, 'reason'), principal) });
+          send(res, 200, { ok: true, value: service.waitTicketForHuman(ticketId, stringField(body, 'reason')) });
           return;
         }
         if (action === 'end') {
@@ -412,7 +399,7 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           if (reason !== 'completed' && reason !== 'failed' && reason !== 'cancelled') {
             throw new MeshError('INVALID_ARGUMENT', 'end reason must be completed, failed or cancelled');
           }
-          send(res, 200, { ok: true, value: service.endTicket(ticketId, reason, principal.id, principal) });
+          send(res, 200, { ok: true, value: service.endTicket(ticketId, reason) });
           return;
         }
         throw new MeshError('INVALID_ARGUMENT', 'ticket action must be stop, resume, assign, start, finish, wait or end');
@@ -423,7 +410,7 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         if (mode !== 'off' && mode !== 'observe' && mode !== 'auto') {
           throw new MeshError('INVALID_ARGUMENT', 'mode must be off, observe or auto');
         }
-        send(res, 200, { ok: true, value: service.setAutonomyMode(mode, principal) });
+        send(res, 200, { ok: true, value: service.setAutonomyMode(mode) });
         return;
       }
       if (path === '/rlp' && method === 'GET') {

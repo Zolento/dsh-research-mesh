@@ -117,16 +117,6 @@ export interface ArtifactConfig {
   readonly maxBytes: number;
 }
 
-/** Browser-facing security settings. */
-export interface SecurityConfig {
-  /**
-   * Optional operator secret. When set, a plugin HTTP request carrying it in
-   * `x-mesh-admin-token` is treated as a verified human operator. Without it,
-   * plugin routes have no human identity and privileged actions fail closed.
-   */
-  readonly adminToken?: string;
-}
-
 /** Complete validated configuration. */
 export interface MeshConfig {
   /** Absolute research project root. */
@@ -163,8 +153,6 @@ export interface MeshConfig {
   readonly artifacts: ArtifactConfig;
   /** Test-only fake transport gate. */
   readonly allowFakeTransport: boolean;
-  /** Browser-facing security settings. */
-  readonly security: SecurityConfig;
   /** Create members as native DSH SubagentRuntime continuable children. */
   readonly nativeMembers: boolean;
   /** Start the scheduler loop automatically on plugin load. */

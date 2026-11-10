@@ -11,7 +11,6 @@ import { AutonomyStore } from '../../src/autonomy/store.ts';
 import { EffectsRunner } from '../../src/autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from '../../src/autonomy/engine.ts';
 import type { AutonomyPolicy, TriggerInput } from '../../src/autonomy/types.ts';
-import { humanPrincipal } from '../../src/autonomy/principal.ts';
 import type { MeshError } from '../../src/errors.ts';
 
 interface Stack {
@@ -53,7 +52,6 @@ function codeOf(fn: () => unknown): string {
   return 'NO_ERROR';
 }
 
-const HUMAN = humanPrincipal('alice');
 
 const explicitInput = (eventId: string): TriggerInput => ({
   source: 'user',
@@ -68,10 +66,10 @@ const explicitInput = (eventId: string): TriggerInput => ({
 test('the same event is recorded once and observe mode creates no ticket', () => {
   const stack = makeStack();
   try {
-    const first = stack.engine.receiveTrigger(explicitInput('evt-1'), HUMAN);
+    const first = stack.engine.receiveTrigger(explicitInput('evt-1'));
     assert.equal(first.disposition, 'accepted');
     assert.ok(first.ticket);
-    const replay = stack.engine.receiveTrigger(explicitInput('evt-1'), HUMAN);
+    const replay = stack.engine.receiveTrigger(explicitInput('evt-1'));
     assert.equal(replay.disposition, 'duplicate');
     assert.equal(stack.engine.listTickets('proj-1').length, 1);
 
@@ -94,7 +92,7 @@ test('the same event is recorded once and observe mode creates no ticket', () =>
 test('an explicit mandate carries useful operations but no scientific write', () => {
   const stack = makeStack();
   try {
-    const received = stack.engine.receiveTrigger(explicitInput('evt-2'), HUMAN);
+    const received = stack.engine.receiveTrigger(explicitInput('evt-2'));
     const ticket = received.ticket as NonNullable<typeof received.ticket>;
     const mandate = stack.engine.getMandate(ticket.ticketId);
     assert.ok(mandate);
@@ -134,7 +132,7 @@ test('auto mode creates a restricted autonomous ticket and never an experiment m
 test('a ticket has at most one active assignment', () => {
   const stack = makeStack();
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-3'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-3')).ticket;
     assert.ok(ticket);
     stack.engine.assign(ticket.ticketId, 'team-a');
     assert.equal(codeOf(() => stack.engine.assign(ticket.ticketId, 'team-b')), 'TICKET_STATE_INVALID');
@@ -147,7 +145,7 @@ test('a ticket has at most one active assignment', () => {
 test('execution success parks the ticket at waiting_evidence and never ends it', () => {
   const stack = makeStack();
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-4'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-4')).ticket;
     assert.ok(ticket);
     const assignment = stack.engine.assign(ticket.ticketId, 'team-a');
     stack.engine.startAssignment(assignment.assignmentId);
@@ -164,14 +162,14 @@ test('execution success parks the ticket at waiting_evidence and never ends it',
 test('a human stop revokes the mandate and no later resume is allowed', () => {
   const stack = makeStack();
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-5'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-5')).ticket;
     assert.ok(ticket);
     const stopped = stack.engine.stopTicket(ticket.ticketId, 'alice', 'no longer needed');
     assert.equal(stopped.status, 'ended');
     assert.equal(stopped.endReason, 'stopped');
     const mandate = stack.engine.getMandate(ticket.ticketId);
     assert.notEqual(mandate?.revokedAt, null);
-    assert.equal(codeOf(() => stack.engine.resumeTicket(ticket.ticketId, { explicit: true }, HUMAN)), 'MANDATE_REVOKED');
+    assert.equal(codeOf(() => stack.engine.resumeTicket(ticket.ticketId, { explicit: true })), 'MANDATE_REVOKED');
     assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'ended');
   } finally {
     stack.cleanup();
@@ -192,7 +190,7 @@ test('an autonomous ticket cannot resume after a policy change without explicit 
     stack.engine.endTicket(ticket.ticketId, 'completed', 'system');
     stack.engine.setPolicy({ ...stack.engine.policy, version: 'policy-2' });
     assert.equal(codeOf(() => stack.engine.resumeTicket(ticket.ticketId, { explicit: false })), 'MANDATE_REVALIDATION_REQUIRED');
-    const resumed = stack.engine.resumeTicket(ticket.ticketId, { explicit: true }, HUMAN);
+    const resumed = stack.engine.resumeTicket(ticket.ticketId, { explicit: true });
     assert.equal(resumed.status, 'open');
   } finally {
     stack.cleanup();
@@ -202,7 +200,7 @@ test('an autonomous ticket cannot resume after a policy change without explicit 
 test('a context-only subscription cannot originate work', () => {
   const stack = makeStack({ mode: 'off' });
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-6'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-6')).ticket;
     assert.ok(ticket);
     stack.engine.subscribe(ticket.ticketId, 'thread-9', 'context');
     const received = stack.engine.receiveTrigger({
@@ -276,7 +274,7 @@ test('a reconcile-only effect is parked, never retried', async () => {
 test('a compute-completion event wakes a waiting ticket without ending it', () => {
   const stack = makeStack();
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-8'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-8')).ticket;
     assert.ok(ticket);
     const assignment = stack.engine.assign(ticket.ticketId, 'team-a');
     stack.engine.startAssignment(assignment.assignmentId);
@@ -328,7 +326,7 @@ test('a queued effect survives a restart and runs once', async () => {
 test('a stopped ticket is not reopened by an autonomous event', () => {
   const stack = makeStack({ mode: 'auto' });
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-9'), HUMAN).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-9')).ticket;
     assert.ok(ticket);
     stack.engine.stopTicket(ticket.ticketId, 'alice', 'stop');
     const event = stack.engine.receiveTrigger({

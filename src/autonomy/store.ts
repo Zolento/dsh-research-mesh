@@ -44,9 +44,7 @@ CREATE TABLE IF NOT EXISTS mesh_triggers (
   occurred_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   disposition TEXT NOT NULL,
-  ticket_id TEXT,
-  principal_kind TEXT NOT NULL DEFAULT 'system',
-  principal_id TEXT NOT NULL DEFAULT 'mesh-host'
+  ticket_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_triggers_project ON mesh_triggers(project_id, received_at);
 CREATE INDEX IF NOT EXISTS idx_mesh_triggers_thread ON mesh_triggers(thread_key);
@@ -188,8 +186,6 @@ function triggerFrom(row: Row): TriggerRecord {
     receivedAt: str(row, 'received_at'),
     disposition: str(row, 'disposition') as TriggerDisposition,
     ticketId: nullableStr(row, 'ticket_id'),
-    principalKind: str(row, 'principal_kind'),
-    principalId: str(row, 'principal_id'),
   };
 }
 
@@ -305,10 +301,6 @@ export class AutonomyStore {
       db.exec('ALTER TABLE mesh_effects ADD COLUMN claimed_at TEXT');
       db.exec('ALTER TABLE mesh_effects ADD COLUMN lease_expires_at TEXT');
     }
-    if (!columns('mesh_triggers').includes('principal_kind')) {
-      db.exec("ALTER TABLE mesh_triggers ADD COLUMN principal_kind TEXT NOT NULL DEFAULT 'system'");
-      db.exec("ALTER TABLE mesh_triggers ADD COLUMN principal_id TEXT NOT NULL DEFAULT 'mesh-host'");
-    }
     if (!columns('mesh_mandates').includes('policy_digest')) {
       db.exec("ALTER TABLE mesh_mandates ADD COLUMN policy_digest TEXT NOT NULL DEFAULT ''");
     }
@@ -356,11 +348,11 @@ export class AutonomyStore {
     return this.transaction(db => {
       const result = db.prepare(`INSERT OR IGNORE INTO mesh_triggers
         (trigger_id, source, event_id, project_id, kind, dedupe_key, payload_json, payload_digest,
-         thread_key, actor, occurred_at, received_at, disposition, ticket_id, principal_kind, principal_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         thread_key, actor, occurred_at, received_at, disposition, ticket_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         record.triggerId, record.source, record.eventId, record.projectId, record.kind, record.dedupeKey,
         record.payloadJson, record.payloadDigest, record.threadKey, record.actor, record.occurredAt,
-        record.receivedAt, record.disposition, record.ticketId, record.principalKind, record.principalId,
+        record.receivedAt, record.disposition, record.ticketId,
       );
       return Number(result.changes) === 1;
     });

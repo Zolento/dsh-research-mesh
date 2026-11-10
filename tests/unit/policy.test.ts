@@ -10,7 +10,6 @@ import { MeshStore } from '../../src/storage/mesh-store.ts';
 import { AutonomyStore } from '../../src/autonomy/store.ts';
 import { EffectsRunner } from '../../src/autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from '../../src/autonomy/engine.ts';
-import { humanPrincipal } from '../../src/autonomy/principal.ts';
 
 function openEngine(path: string): { engine: AutonomyEngine; teamStore: ReturnType<typeof openTeamStore> } {
   const teamStore = openTeamStore({ path });
@@ -75,15 +74,15 @@ test('a revoked mandate stays revoked across a restart and policy change', () =>
     const ticket = first.engine.receiveTrigger({
       source: 'user', eventId: 'evt-1', projectId: 'proj-1', kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'work' },
-    }, humanPrincipal('alice')).ticket;
+    }).ticket;
     assert.ok(ticket);
-    first.engine.stopTicket(ticket.ticketId, 'alice', 'stop', humanPrincipal('alice'));
+    first.engine.stopTicket(ticket.ticketId, 'alice', 'stop');
     first.engine.setPolicy({ ...first.engine.policy, mode: 'auto' });
     first.teamStore.close();
 
     const second = openEngine(path);
     try {
-      second.engine.resumeTicket(ticket.ticketId, { explicit: true }, humanPrincipal('alice'));
+      second.engine.resumeTicket(ticket.ticketId, { explicit: true });
       assert.fail('a revoked mandate must not resume');
     } catch (error) {
       assert.equal((error as { code?: string }).code, 'MANDATE_REVOKED');

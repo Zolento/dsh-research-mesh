@@ -10,7 +10,6 @@ import { MeshStore } from '../../src/storage/mesh-store.ts';
 import { AutonomyStore } from '../../src/autonomy/store.ts';
 import { EffectsRunner } from '../../src/autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from '../../src/autonomy/engine.ts';
-import { humanPrincipal } from '../../src/autonomy/principal.ts';
 import { makeService, makeTempProject } from '../helpers/env.ts';
 import type { MeshError } from '../../src/errors.ts';
 import type { ScientificCompletion } from '../../src/rlp/outcome.ts';
@@ -45,7 +44,7 @@ function researchTicket(engine: AutonomyEngine): string {
   const received = engine.receiveTrigger({
     source: 'user', eventId: 'evt-r', projectId: 'proj-1', kind: 'user_request',
     explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
-  }, humanPrincipal('alice'));
+  });
   assert.ok(received.ticket);
   return received.ticket.ticketId;
 }
@@ -87,7 +86,7 @@ test('waiting_evidence cannot be turned into scientific completion without a pro
     stack.engine.startAssignment(assignment.assignmentId);
     stack.engine.finishAssignment(assignment.assignmentId, { ok: true });
     assert.equal(
-      codeOf(() => stack.engine.endTicket(ticketId, 'completed', 'alice', humanPrincipal('alice'))),
+      codeOf(() => stack.engine.endTicket(ticketId, 'completed', 'alice')),
       'RLP_GATE_HOLD',
     );
     assert.equal(stack.engine.getTicket(ticketId).status, 'waiting_evidence');
@@ -99,7 +98,7 @@ test('a verified RLP proof records the completion and its digest', () => {
   try {
     const ticketId = researchTicket(stack.engine);
     const proof = { ...PROOF, ticketId };
-    const ended = stack.engine.endTicket(ticketId, 'completed', 'alice', humanPrincipal('alice'), proof);
+    const ended = stack.engine.endTicket(ticketId, 'completed', 'alice', proof);
     assert.equal(ended.status, 'ended');
     assert.equal(ended.endReason, 'completed');
     assert.equal(ended.outcomeRef, proof.proofDigest);
@@ -109,22 +108,21 @@ test('a verified RLP proof records the completion and its digest', () => {
 test('engineering tickets and cancellations do not need a scientific proof', () => {
   const stack = makeStack();
   try {
-    const human = humanPrincipal('alice');
     const received = stack.engine.receiveTrigger({
       source: 'user', eventId: 'evt-e', projectId: 'proj-1', kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'fix the build' },
-    }, human);
+    });
     const ticket = received.ticket;
     assert.ok(ticket);
     assert.equal(ticket.kind, 'engineering');
-    assert.equal(stack.engine.endTicket(ticket.ticketId, 'completed', 'alice', human).endReason, 'completed');
+    assert.equal(stack.engine.endTicket(ticket.ticketId, 'completed', 'alice').endReason, 'completed');
 
     const other = stack.engine.receiveTrigger({
       source: 'user', eventId: 'evt-c', projectId: 'proj-1', kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'cancel me' },
-    }, human).ticket;
+    }).ticket;
     assert.ok(other);
-    assert.equal(stack.engine.endTicket(other.ticketId, 'cancelled', 'alice', human).endReason, 'cancelled');
+    assert.equal(stack.engine.endTicket(other.ticketId, 'cancelled', 'alice').endReason, 'cancelled');
   } finally { stack.cleanup(); }
 });
 
@@ -161,12 +159,12 @@ test('the service verifies completion through the injected RLP verifier', opts, 
     const received = service.recordTrigger({
       source: 'user', eventId: 'evt-s', projectId: created.projectId, kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
-    }, humanPrincipal('alice'));
+    });
     assert.ok(received.ticket);
-    const assignment = service.assignTicket(received.ticket.ticketId, group.teamId, {}, humanPrincipal('alice'));
-    service.startTicketAssignment(assignment.assignmentId, {}, humanPrincipal('alice'));
-    service.finishTicketAssignment(assignment.assignmentId, { ok: true }, humanPrincipal('alice'));
-    const ended = await service.completeResearchTicket(received.ticket.ticketId, 'X1', 'A', humanPrincipal('alice'));
+    const assignment = service.assignTicket(received.ticket.ticketId, group.teamId, {});
+    service.startTicketAssignment(assignment.assignmentId, {});
+    service.finishTicketAssignment(assignment.assignmentId, { ok: true });
+    const ended = await service.completeResearchTicket(received.ticket.ticketId, 'X1', 'A');
     assert.equal(ended.status, 'ended');
     assert.equal(ended.outcomeRef, 'sha256:pass');
   } finally {
@@ -187,10 +185,10 @@ test('the service refuses completion when RLP returns HOLD', opts, async () => {
     const received = service.recordTrigger({
       source: 'user', eventId: 'evt-h', projectId: created.projectId, kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
-    }, humanPrincipal('alice'));
+    });
     assert.ok(received.ticket);
     await assert.rejects(
-      service.completeResearchTicket(received.ticket.ticketId, 'X1', 'A', humanPrincipal('alice')),
+      service.completeResearchTicket(received.ticket.ticketId, 'X1', 'A'),
       (error: MeshError) => error.code === 'RLP_GATE_HOLD',
     );
     assert.equal(service.getTicket(received.ticket.ticketId).status, 'open');

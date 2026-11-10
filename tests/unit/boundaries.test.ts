@@ -10,7 +10,6 @@ import { MeshStore } from '../../src/storage/mesh-store.ts';
 import { AutonomyStore } from '../../src/autonomy/store.ts';
 import { EffectsRunner } from '../../src/autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from '../../src/autonomy/engine.ts';
-import { humanPrincipal } from '../../src/autonomy/principal.ts';
 import type { MeshError } from '../../src/errors.ts';
 
 interface Stack {
@@ -48,7 +47,7 @@ function ticket(stack: Stack, projectId = 'proj-1'): string {
   const received = stack.engine.receiveTrigger({
     source: 'user', eventId: `evt-${projectId}`, projectId, kind: 'user_request',
     explicit: true, payload: { routeId: 'A', title: 'work' },
-  }, humanPrincipal('alice'));
+  });
   assert.ok(received.ticket);
   return received.ticket.ticketId;
 }
@@ -84,7 +83,7 @@ test('a Ticket cannot subscribe to a thread owned by another project', () => {
     const ticketId = ticket(stack);
     stack.store.upsertThread('thread-foreign', 'proj-2');
     assert.equal(
-      codeOf(() => stack.engine.subscribe(ticketId, 'thread-foreign', 'context', humanPrincipal('alice'))),
+      codeOf(() => stack.engine.subscribe(ticketId, 'thread-foreign', 'context')),
       'POLICY_BLOCKED',
     );
   } finally { stack.cleanup(); }
@@ -94,9 +93,9 @@ test('a context subscription cannot be upgraded to an owned one', () => {
   const stack = makeStack();
   try {
     const ticketId = ticket(stack);
-    stack.engine.subscribe(ticketId, 'thread-1', 'context', humanPrincipal('alice'));
+    stack.engine.subscribe(ticketId, 'thread-1', 'context');
     assert.equal(
-      codeOf(() => stack.engine.subscribe(ticketId, 'thread-1', 'owned', humanPrincipal('alice'))),
+      codeOf(() => stack.engine.subscribe(ticketId, 'thread-1', 'owned')),
       'POLICY_BLOCKED',
     );
     const upgraded = stack.store.listSubscriptions(ticketId).find(row => row.threadKey === 'thread-1');
@@ -114,7 +113,7 @@ test('a mandate whose route differs from its ticket is refused', () => {
       db.prepare("UPDATE mesh_mandates SET route_id = 'B' WHERE mandate_id = ?").run(record.mandateId);
     });
     assert.equal(
-      codeOf(() => stack.engine.assign(ticketId, 'team-a', {}, humanPrincipal('alice'))),
+      codeOf(() => stack.engine.assign(ticketId, 'team-a', {})),
       'MANDATE_SCOPE_VIOLATION',
     );
   } finally { stack.cleanup(); }

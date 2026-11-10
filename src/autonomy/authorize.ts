@@ -1,15 +1,15 @@
 /**
  * The single authorization entry for every Ticket / Mandate transition.
  *
- * The Gate in `receiveTrigger` decides whether an event may *become* work; this
- * module decides whether an already-authorized Ticket may take a specific
- * action. All checks are mechanical and run inside the caller's transaction
- * boundary (the engine calls this before writing).
+ * DSH owns the human entry points; Mesh does not implement a second user
+ * permission system. This module enforces the *autonomy* boundary instead: a
+ * Ticket may only act inside its Mandate, inside its project/route, inside its
+ * group, under the policy it was issued for, and inside the RLP execution scope.
+ * All checks are mechanical and run before the engine writes.
  */
 
 import { MeshError } from '../errors.ts';
 import type { MeshGroupStatus } from '../storage/types.ts';
-import { isHuman, requireHuman, requireTrusted, type Principal } from './principal.ts';
 import type {
   AssignmentRecord,
   AutonomyPolicy,
@@ -56,7 +56,7 @@ const REQUIRES_ACTIVE: ReadonlySet<AuthorizedAction> = new Set([
   'ticket.create', 'ticket.assign', 'assignment.start', 'ticket.mark_compute', 'ticket.resume',
 ]);
 
-/** Project facts the engine passes in; never trusted from an HTTP body. */
+/** Project facts the engine passes in. */
 export interface ProjectFacts {
   readonly projectId: string;
   readonly status: 'active' | 'paused' | 'archived' | 'registered';
@@ -85,7 +85,6 @@ export interface ResourceRequest {
 
 /** Complete input for one authorization decision. */
 export interface AuthorizeInput {
-  readonly principal: Principal;
   readonly action: AuthorizedAction;
   readonly policy: AutonomyPolicy;
   readonly project: ProjectFacts;
@@ -105,31 +104,20 @@ export interface AuthorizeInput {
 
 const SCOPE_RANK: Readonly<Record<string, number>> = { discovery_only: 0, strategy: 1, full: 2 };
 
-function deny(code: 'MANDATE_SCOPE_VIOLATION' | 'POLICY_BLOCKED' | 'MANDATE_REVOKED' | 'TICKET_STATE_INVALID' | 'PRINCIPAL_UNTRUSTED' | 'RLP_GATE_HOLD', message: string, details: Record<string, unknown> = {}): never {
+function deny(
+  code: 'MANDATE_SCOPE_VIOLATION' | 'POLICY_BLOCKED' | 'MANDATE_REVOKED' | 'TICKET_STATE_INVALID' | 'RLP_GATE_HOLD',
+  message: string,
+  details: Record<string, unknown> = {},
+): never {
   throw new MeshError(code, message, details);
 }
 
 /**
  * Authorize one action, or throw a typed Mesh failure.
- * @param input - principal, action, project and resolved entities.
+ * @param input - action, policy, project and resolved entities.
  */
 export function authorizeAction(input: AuthorizeInput): void {
-  const { principal, action, policy, project, ticket, mandate } = input;
-
-  // Principal class first: some actions are human-only regardless of Mandate.
-  if (action === 'policy.change') requireHuman(principal, 'changing the autonomy policy');
-  if (action === 'ticket.assign' || action === 'assignment.start'
-    || action === 'assignment.finish' || action === 'ticket.mark_compute') {
-    requireTrusted(principal, action);
-  }
-  if (action === 'ticket.create' && ticket === undefined) {
-    // Creation is checked by the engine before a Ticket exists.
-    requireTrusted(principal, action);
-  }
-  if (action === 'ticket.end' && input.hasCompletionProof === true) {
-    // Scientific completion is a host/RLP outcome, not a chat decision.
-    requireTrusted(principal, 'committing a scientific completion');
-  }
+  const { action, policy, project, ticket, mandate } = input;
 
   if (REQUIRES_ACTIVE.has(action) && project.status !== 'active') {
     deny('POLICY_BLOCKED', 'project is not active', { projectId: project.projectId, status: project.status });
@@ -139,7 +127,8 @@ export function authorizeAction(input: AuthorizeInput): void {
     if (ticket.projectId !== project.projectId) {
       deny('POLICY_BLOCKED', 'ticket belongs to another project', { ticketId: ticket.ticketId, projectId: project.projectId });
     }
-    if (action === 'ticket.end' && ticket.kind === 'research' && ticket.status === 'waiting_evidence' && input.hasCompletionProof !== true) {
+    if (action === 'ticket.end' && ticket.kind === 'research'
+      && ticket.status === 'waiting_evidence' && input.hasCompletionProof !== true) {
       deny('RLP_GATE_HOLD', 'research completion requires an RLP outcome proof', { ticketId: ticket.ticketId });
     }
   }
@@ -180,10 +169,8 @@ export function authorizeAction(input: AuthorizeInput): void {
         teamId: input.group.teamId, groupProject: input.group.projectId, projectId: project.projectId,
       });
     }
-    if (action === 'ticket.assign' || action === 'assignment.start') {
-      if (input.group.status !== 'active') {
-        deny('POLICY_BLOCKED', 'group is not active', { teamId: input.group.teamId, status: input.group.status });
-      }
+    if ((action === 'ticket.assign' || action === 'assignment.start') && input.group.status !== 'active') {
+      deny('POLICY_BLOCKED', 'group is not active', { teamId: input.group.teamId, status: input.group.status });
     }
   }
 
@@ -197,12 +184,9 @@ export function authorizeAction(input: AuthorizeInput): void {
 
   if (action === 'subscription.add') {
     if (input.existingSubscription === 'context' && input.subscriptionMode === 'owned') {
-      deny('POLICY_BLOCKED', 'a context-only subscription cannot be upgraded in place; use a new explicit request', {
+      deny('POLICY_BLOCKED', 'a context-only subscription cannot be upgraded in place; use a new request', {
         ticketId: ticket?.ticketId,
       });
-    }
-    if (input.subscriptionMode === 'owned' && !isHuman(principal)) {
-      requireTrusted(principal, 'granting an owned subscription');
     }
   }
 

@@ -15,7 +15,6 @@ import { AutonomyStore } from './autonomy/store.ts';
 import { EffectsRunner, type EffectsTickReport } from './autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from './autonomy/engine.ts';
 import type { AssignmentRecord, AutonomyPolicy, CompletionProof, CreateTicketInput, ReceiveResult, TicketRecord, TriggerInput, TriggerRecord } from './autonomy/types.ts';
-import { SYSTEM_PRINCIPAL, humanPrincipal, requireHuman, type Principal } from './autonomy/principal.ts';
 import { RlpCompletionVerifier, requireScientificPass, type CompletionVerifier } from './rlp/outcome.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { authorizeAction } from './autonomy/authorize.ts';
@@ -420,20 +419,6 @@ export class MeshService {
     };
   }
 
-  /**
-   * Verify the optional operator secret for plugin HTTP routes. Constant-time;
-   * an unset secret means no HTTP caller is a human.
-   * @param token - value from `x-mesh-admin-token`.
-   * @returns true only when it matches the configured secret.
-   */
-  verifyAdminToken(token: string | undefined): boolean {
-    const expected = this.#config.security.adminToken;
-    if (expected === undefined || token === undefined || token === '') return false;
-    const left = createHash('sha256').update(token).digest();
-    const right = createHash('sha256').update(expected).digest();
-    return timingSafeEqual(left, right);
-  }
-
   /** Rebuild the RLP runtime when its skill digest changed. */
   #refreshRlp(): void {
     if (this.#rlp === null || !this.#rlp.available) return;
@@ -505,13 +490,13 @@ export class MeshService {
   }
 
   /** Record one immutable Trigger and apply the deterministic Gate. */
-  recordTrigger(input: TriggerInput, principal: Principal = SYSTEM_PRINCIPAL): ReceiveResult {
-    return this.#requireAutonomy().receiveTrigger(input, principal);
+  recordTrigger(input: TriggerInput): ReceiveResult {
+    return this.#requireAutonomy().receiveTrigger(input);
   }
 
   /** Create a Ticket explicitly from a previously accepted Trigger. */
-  createTicket(input: CreateTicketInput, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    return this.#requireAutonomy().createTicket(input, principal);
+  createTicket(input: CreateTicketInput): TicketRecord {
+    return this.#requireAutonomy().createTicket(input);
   }
 
   listTickets(projectId: string): readonly TicketRecord[] {
@@ -530,38 +515,37 @@ export class MeshService {
     return this.#requireAutonomy().listAssignments(ticketId);
   }
 
-  assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
+  assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
     this.#requireTeams().get(teamId);
-    return this.#requireAutonomy().assign(ticketId, teamId, options, principal);
+    return this.#requireAutonomy().assign(ticketId, teamId, options);
   }
 
-  startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
-    return this.#requireAutonomy().startAssignment(assignmentId, options, principal);
+  startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
+    return this.#requireAutonomy().startAssignment(assignmentId, options);
   }
 
-  finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }, principal: Principal = SYSTEM_PRINCIPAL): AssignmentRecord {
-    return this.#requireAutonomy().finishAssignment(assignmentId, options, principal);
+  finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }): AssignmentRecord {
+    return this.#requireAutonomy().finishAssignment(assignmentId, options);
   }
 
-  markTicketCompute(ticketId: string, jobId: string, assignmentId?: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId, principal);
+  markTicketCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
+    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId);
   }
 
-  waitTicketForHuman(ticketId: string, reason: string, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    requireHuman(principal, 'parking a ticket for a human');
+  waitTicketForHuman(ticketId: string, reason: string): TicketRecord {
     return this.#requireAutonomy().waitForHuman(ticketId, reason);
   }
 
-  stopTicket(ticketId: string, reason: string, by = 'operator', principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    return this.#requireAutonomy().stopTicket(ticketId, by, reason, principal);
+  stopTicket(ticketId: string, reason: string, by = 'operator'): TicketRecord {
+    return this.#requireAutonomy().stopTicket(ticketId, by, reason);
   }
 
-  resumeTicket(ticketId: string, explicit = false, principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    return this.#requireAutonomy().resumeTicket(ticketId, { explicit }, principal);
+  resumeTicket(ticketId: string, explicit = false): TicketRecord {
+    return this.#requireAutonomy().resumeTicket(ticketId, { explicit });
   }
 
-  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator', principal: Principal = SYSTEM_PRINCIPAL): TicketRecord {
-    return this.#requireAutonomy().endTicket(ticketId, reason, by, principal);
+  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator'): TicketRecord {
+    return this.#requireAutonomy().endTicket(ticketId, reason, by);
   }
 
   /**
@@ -569,10 +553,10 @@ export class MeshService {
    * @param ticketId - ticket identity.
    * @param experimentId - RLP experiment id.
    * @param routeId - RLP route that owns the state.
-   * @param principal - trusted caller (host/RLP outcome path).
+   * @param by - caller recorded on the ending event.
    * @returns ended ticket with the proof digest recorded.
    */
-  async completeResearchTicket(ticketId: string, experimentId: string, routeId: string, principal: Principal = SYSTEM_PRINCIPAL): Promise<TicketRecord> {
+  async completeResearchTicket(ticketId: string, experimentId: string, routeId: string): Promise<TicketRecord> {
     this.#refreshRlp();
     const ticket = this.#requireAutonomy().getTicket(ticketId);
     if (ticket.kind !== 'research') {
@@ -593,7 +577,7 @@ export class MeshService {
       verifiedAt: nowIso(),
       proofDigest: completion.proofDigest,
     };
-    return this.#requireAutonomy().endTicket(ticketId, 'completed', principal.id, principal, proof);
+    return this.#requireAutonomy().endTicket(ticketId, 'completed', 'rlp-outcome', proof);
   }
 
   #verifier(): CompletionVerifier {
@@ -607,9 +591,8 @@ export class MeshService {
   }
 
   /** Change the autonomy mode; existing Mandates are not revoked. */
-  setAutonomyMode(mode: AutonomyPolicy['mode'], principal: Principal = SYSTEM_PRINCIPAL): AutonomyPolicy {
+  setAutonomyMode(mode: AutonomyPolicy['mode']): AutonomyPolicy {
     const autonomy = this.#requireAutonomy();
-    requireHuman(principal, 'changing the autonomy policy');
     return autonomy.setPolicy({ ...autonomy.policy, mode });
   }
 
@@ -1443,7 +1426,7 @@ export class MeshService {
           ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
         },
         ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
-      }, SYSTEM_PRINCIPAL);
+      });
     } catch (error) {
       this.#logger.warn('artifact wake-up trigger failed', { jobId: result.jobId, error: String(error) });
     }

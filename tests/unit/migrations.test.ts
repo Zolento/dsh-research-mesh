@@ -10,7 +10,6 @@ import { MeshStore } from '../../src/storage/mesh-store.ts';
 import { AutonomyStore } from '../../src/autonomy/store.ts';
 import { EffectsRunner } from '../../src/autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from '../../src/autonomy/engine.ts';
-import { humanPrincipal } from '../../src/autonomy/principal.ts';
 
 test('v2 schema upgrades, rolls back and upgrades again without losing rows', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mesh-mig-'));
@@ -31,7 +30,7 @@ test('v2 schema upgrades, rolls back and upgrades again without losing rows', ()
     const ticket = engine.receiveTrigger({
       source: 'user', eventId: 'evt-1', projectId: 'proj-1', kind: 'user_request',
       explicit: true, payload: { routeId: 'A', title: 'work' },
-    }, humanPrincipal('alice')).ticket;
+    }).ticket;
     assert.ok(ticket);
     engine.setPolicy({ ...engine.policy, mode: 'off' });
 

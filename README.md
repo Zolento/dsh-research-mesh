@@ -80,7 +80,7 @@ Verified against **DSH 0.2.2-rc.1** (Node 24) and RLP **v2.2.0**.
 cd dsh-research-mesh
 node scripts/link-toolchain.mjs
 npm run typecheck
-npm run test:all          # 153 tests
+npm run test:all          # 145 tests
 
 # isolated Web UI acceptance (does not touch the user's profile)
 node scripts/ui-acceptance.mjs
@@ -149,7 +149,7 @@ See [PROFILE-PER-PROJECT.md](docs/PROFILE-PER-PROJECT.md) and the
 - [DSH 0.2.2-rc.1 adaptation](docs/DSH-0.2.2-rc1.md)
 - [Tests and evidence](docs/TESTING.md)
 - [Current status and limits](docs/STATUS.md)
-- Security audit fixes: [10-security-audit.md](docs/fusion/10-security-audit.md)
+- Audit fixes: [10-audit-fixes.md](docs/fusion/10-audit-fixes.md)
 - Fusion design: [audit](docs/fusion/00-base-audit.md) ·
   [architecture](docs/fusion/01-architecture.md) ·
   [authority](docs/fusion/02-authority-and-state.md) ·

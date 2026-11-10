@@ -96,9 +96,6 @@ export interface TriggerRecord {
   readonly receivedAt: string;
   readonly disposition: TriggerDisposition;
   readonly ticketId: string | null;
-  /** Principal that recorded the Trigger, for audit. */
-  readonly principalKind: string;
-  readonly principalId: string;
 }
 
 /** Persistent authorization derived from a Trigger and the current Policy. */

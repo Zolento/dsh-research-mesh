@@ -15,7 +15,7 @@
 | 9 | No scientific PASS without evidence gate | **yes** | success parks at `waiting_evidence`; `endTicket('completed')` is explicit only |
 | 10 | Restart/failure does not duplicate experiments | **yes** | existing reconcile + reconcile-only effects + consumed journal |
 | 11 | WebUI shows projects/tickets/agents/experiments/todos | **yes** | Tickets section + workbench API; screenshots not refreshed |
-| 12 | Existing Mesh behaviour does not regress | **yes** | 121/153 tests, typecheck, check-dsh |
+| 12 | Existing Mesh behaviour does not regress | **yes** | 145/145 tests, typecheck, check-dsh |
 
 ## 2. Remaining risks
 
