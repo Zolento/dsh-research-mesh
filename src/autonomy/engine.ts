@@ -77,7 +77,13 @@ export interface AutonomyEngineOptions {
   /** Group lookup; the service supplies the real Mesh registry. */
   readonly groupFacts?: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
   /** Job lookup; the service supplies the authoritative Mesh job registry. */
-  readonly jobFacts?: (jobId: string) => { status: string; projectId: string; teamId: string } | undefined;
+  readonly jobFacts?: (jobId: string) => {
+    status: string;
+    projectId: string;
+    teamId: string;
+    taskId?: string;
+    manifestJson?: string;
+  } | undefined;
 }
 
 /** Operations an explicit Mandate may carry. */
@@ -101,7 +107,13 @@ export class AutonomyEngine {
   readonly #projectStatus: (projectId: string) => 'active' | 'paused' | 'archived' | 'registered';
   readonly #rlpFormalRun: (projectId: string) => boolean;
   readonly #groupFacts: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
-  readonly #jobFacts: (jobId: string) => { status: string; projectId: string; teamId: string } | undefined;
+  readonly #jobFacts: (jobId: string) => {
+    status: string;
+    projectId: string;
+    teamId: string;
+    taskId?: string;
+    manifestJson?: string;
+  } | undefined;
   #policy: AutonomyPolicy;
 
   /**
@@ -474,6 +486,11 @@ export class AutonomyEngine {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment is not pending', { assignmentId, status: assignment.status });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
+    if (ticket.status === 'ended') {
+      throw new MeshError('TICKET_STATE_INVALID', 'cannot start an assignment for an ended ticket', {
+        ticketId: ticket.ticketId, endReason: ticket.endReason,
+      });
+    }
     this.#authorizeTicket('assignment.start', ticket, {
       groupTeamId: assignment.teamId,
       assignment,
@@ -513,6 +530,11 @@ export class AutonomyEngine {
       throw new MeshError('TICKET_STATE_INVALID', 'assignment already ended', { assignmentId });
     }
     const ticket = this.#store.requireTicket(assignment.ticketId);
+    if (ticket.status === 'ended') {
+      throw new MeshError('TICKET_STATE_INVALID', 'cannot finish an assignment for an ended ticket', {
+        ticketId: ticket.ticketId, endReason: ticket.endReason,
+      });
+    }
     this.#authorizeTicket('assignment.finish', ticket, {
       groupTeamId: assignment.teamId,
       assignment,
@@ -554,6 +576,11 @@ export class AutonomyEngine {
    */
   markCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
+    if (ticket.status === 'ended') {
+      throw new MeshError('TICKET_STATE_INVALID', 'cannot bind compute to an ended ticket', {
+        ticketId, endReason: ticket.endReason,
+      });
+    }
     const assignment = assignmentId === undefined
       ? this.#store.activeAssignment(ticketId)
       : this.#requireAssignment(assignmentId);
@@ -565,11 +592,7 @@ export class AutonomyEngine {
         ticketId, assignmentId: assignment.assignmentId,
       });
     }
-    this.#authorizeTicket('ticket.mark_compute', ticket, {
-      assignment,
-      rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
-    });
-    const job = this.#store.job(jobId);
+    const job = this.#jobFacts(jobId);
     if (job === undefined) {
       throw new MeshError('TASK_NOT_FOUND', 'cannot park a ticket on an unknown job', { ticketId, jobId });
     }
@@ -583,12 +606,16 @@ export class AutonomyEngine {
         jobId, jobTeam: job.teamId, assignmentTeam: assignment.teamId,
       });
     }
-    if (assignment.taskId !== null && job.taskId !== assignment.taskId) {
+    if (assignment.taskId !== null && job.taskId !== undefined && job.taskId !== assignment.taskId) {
       throw new MeshError('TICKET_STATE_INVALID', 'job does not belong to this assignment', {
         jobId, assignmentTask: assignment.taskId, jobTask: job.taskId,
       });
     }
-    const manifest = JSON.parse(job.manifestJson) as { authorization?: Record<string, unknown> };
+    const manifestJson = job.manifestJson ?? '';
+    if (manifestJson === '') {
+      throw new MeshError('MANDATE_SCOPE_VIOLATION', 'job record carries no manifest to bind the experiment', { jobId });
+    }
+    const manifest = JSON.parse(manifestJson) as { authorization?: Record<string, unknown> };
     const experiment = manifest.authorization?.rsi_experiment_id ?? manifest.authorization?.experiment_id;
     if (typeof experiment !== 'string' || experiment === '') {
       throw new MeshError('MANDATE_SCOPE_VIOLATION', 'job manifest carries no RLP experiment binding', { jobId });
@@ -598,16 +625,53 @@ export class AutonomyEngine {
         ticketId, ticketExperiment: ticket.experimentId, jobExperiment: experiment,
       });
     }
+    // Idempotent re-binding: the same ticket/job already reached a post-compute
+    // state, so return it without a second event or assignment update.
+    const alreadyBound = (ticket.status === 'waiting_compute' || ticket.status === 'waiting_evidence'
+      || ticket.status === 'waiting_human')
+      && ticket.experimentId === experiment
+      && this.#store.listAssignments(ticketId).some(row => row.jobId === jobId);
+    if (alreadyBound) return ticket;
+
+    this.#authorizeTicket('ticket.mark_compute', ticket, {
+      assignment,
+      rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
+    });
+    if (assignment.status === 'ended') {
+      throw new MeshError('TICKET_STATE_INVALID', 'assignment already ended without this job', {
+        ticketId, assignmentId: assignment.assignmentId,
+      });
+    }
+
     const now = nowIso();
+    let status: TicketStatus;
+    let reason: string;
+    let kind: string;
+    if (job.status === 'ingested') {
+      // The compute finished before the binding: artifacts are already verified,
+      // so the ticket waits for RLP evidence, never for a second collection.
+      status = 'waiting_evidence';
+      reason = 'artifacts already ingested; awaiting RLP evidence outcome';
+      kind = 'compute-bound-after-ingestion';
+    } else if (job.status === 'failed' || job.status === 'cancelled') {
+      status = 'waiting_human';
+      reason = `compute job ${jobId} is ${job.status}`;
+      kind = 'compute-bound-failed';
+    } else {
+      status = 'waiting_compute';
+      reason = `compute job ${jobId}`;
+      kind = 'waiting-compute';
+    }
     const updated: TicketRecord = {
-      ...ticket, status: 'waiting_compute', waitingReason: `compute job ${jobId}`,
-      experimentId: experiment, updatedAt: now,
+      ...ticket, status, waitingReason: reason, experimentId: experiment, updatedAt: now,
     };
     this.#store.transaction(() => {
       this.#store.updateAssignment({ ...assignment, status: 'ended', endedAt: now, jobId });
       this.#store.updateTicket(updated);
     });
-    this.#event('ticket', ticketId, 'waiting-compute', { jobId, assignmentId: assignmentId ?? null });
+    this.#event('ticket', ticketId, kind, {
+      jobId, assignmentId: assignment.assignmentId, jobStatus: job.status,
+    });
     return updated;
   }
 

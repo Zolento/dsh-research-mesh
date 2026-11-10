@@ -117,11 +117,55 @@ tree); the async RLP resolver stays the authority for reporting and the worker
 still requires the RLP receipt. This is recorded as a known limitation, not a
 scientific gate.
 
+## 5.3 Final state-consistency round (2026-11-10)
+
+### Task A — post-bound Job terminal handling
+
+`markCompute()` now branches on the authoritative job status after validating
+the ticket (not ended) and assignment (belongs, not already ended without this
+job):
+
+| Job status | Ticket result | Audit event |
+|---|---|---|
+| `submitted` / `running` / `output_ready` | `waiting_compute` | `waiting-compute` |
+| `ingested` | `waiting_evidence` (artifacts already verified) | `compute-bound-after-ingestion` |
+| `failed` / `cancelled` | `waiting_human` | `compute-bound-failed` |
+
+Re-binding the same ticket/job returns the stored ticket without a second event
+or assignment update, so no duplicate scientific proof can be produced. The
+experiment id is persisted on the ticket and survives restart. Tests cover
+bind-then-ingest wake, ingest-then-bind compensation, restart compensation and
+repeated binding (`tests/unit/mark-compute.test.ts`).
+
+### Task B — background Effects consumption
+
+- `MeshWorker.start()` now runs `effects.tick()` before and after each round,
+  inside the existing `#busy` guard; no second scheduler is created.
+- The same `EffectsRunner` is shared with `runWorkerOnce`, so manual and
+  background paths use one queue and claim-token fencing.
+- `stop()` is async and waits for the in-flight round; `MeshService.close()`
+  awaits it before closing SQLite, so shutdown cannot touch a closed database.
+- observe-mode notices are drained by the loop (`tests/integration/
+  background-effects.test.ts`).
+- `dispatch_ticket` / `launch_assignment` remain audit-only; P2 is still not
+  implemented.
+
+### Task C — irreversible ticket boundaries
+
+- `markCompute`, `startAssignment` and `finishAssignment` refuse an ended
+  ticket; an old assignment or a late compute event cannot overwrite the end
+  state.
+- A stopped ticket keeps `MANDATE_REVOKED`; its mandate cannot be reused for
+  assignment, compute or resume.
+- Reopening remains only through the explicit `resumeTicket` path and its
+  policy/mandate checks.
+- State-transition matrix tests: `tests/unit/ticket-transitions.test.ts`.
+
 ## 6. Test evidence
 
 ```
 npm run typecheck     PASS
-npm run test:all      156 tests, 156 pass, 0 fail
+npm run test:all      167 tests, 167 pass, 0 fail
 node scripts/check-dsh.mjs
   installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
   @deepseek-ai/schemastery 3.19.0; PASS
@@ -131,8 +175,9 @@ node scripts/ui-acceptance.mjs   PASS (isolated profile, 3 groups, model
 
 New suites: `rlp-completion` (6, real RLP apply/assurance/decision + HTTP
 completion), `completion` (6), `boundaries` (5), `effects-recovery` (6),
-`policy` (4), `migrations` (1), plus autonomy cases for subscriptions, wake,
-job ownership and fake completion. The identity suite was removed with P0-01.
+`policy` (4), `migrations` (1), `mark-compute` (5), `ticket-transitions` (5),
+`background-effects` (1), plus autonomy cases for subscriptions, wake, job
+ownership and fake completion. The identity suite was removed with P0-01.
 
 ## 7. Not verified
 

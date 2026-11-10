@@ -267,6 +267,7 @@ export class MeshService {
         rsi,
         logger: this.#logger,
         workerId,
+        effects,
       });
       this.#layout = layout;
       this.#teamStore = teamStore;
@@ -317,7 +318,7 @@ export class MeshService {
     // durable project bindings.
     this.#closing = true;
     this.#initialized = false;
-    this.#worker?.stop();
+    await this.#worker?.stop();
     try { await this.#teams?.close(); } catch (error) {
       this.#logger.warn('team session teardown failed', { error: String(error) });
     }
@@ -632,6 +633,11 @@ export class MeshService {
   /** Run one durable-effects tick (also called by `runWorkerOnce`). */
   runEffects(): Promise<EffectsTickReport> {
     return this.#requireEffects().tick();
+  }
+
+  /** Durable effects rows, for diagnostics and tests. */
+  listEffects(status?: import('./autonomy/types.ts').EffectStatus): readonly import('./autonomy/types.ts').EffectRecord[] {
+    return this.#requireEffects().list(status);
   }
 
   /** Compact autonomy status for the Workbench. */
@@ -1504,8 +1510,8 @@ export class MeshService {
     this.#requireWorker().start();
   }
 
-  stopScheduler(): void {
-    this.#requireWorker().stop();
+  async stopScheduler(): Promise<void> {
+    await this.#requireWorker().stop();
   }
 
   workerStatus(): WorkerStatus {

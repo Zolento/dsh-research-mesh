@@ -96,8 +96,10 @@ export class MeshWorker {
   readonly #rsi: RsiAdapter;
   readonly #logger: MeshLogger;
   readonly #workerId: string;
+  readonly #effects: { tick(limit?: number): Promise<unknown> } | undefined;
   #timer: NodeJS.Timeout | null = null;
   #busy = false;
+  #inFlight: Promise<void> | null = null;
   #lastError: string | null = null;
 
   /**
@@ -114,6 +116,8 @@ export class MeshWorker {
     rsi: RsiAdapter;
     logger: MeshLogger;
     workerId: string;
+    /** Durable effects runner; the background loop drains it with each round. */
+    effects?: { tick(limit?: number): Promise<unknown> };
   }) {
     this.#config = options.config;
     this.#store = options.store;
@@ -125,6 +129,7 @@ export class MeshWorker {
     this.#rsi = options.rsi;
     this.#logger = options.logger;
     this.#workerId = options.workerId;
+    this.#effects = options.effects;
   }
 
   /** Current worker status. */
@@ -224,19 +229,38 @@ export class MeshWorker {
     this.#timer = setInterval(() => {
       if (this.#busy) return;
       this.#busy = true;
-      void this.runOnce().catch(error => {
-        this.#lastError = error instanceof Error ? error.message : String(error);
-        this.#logger.error('worker round failed', { error: this.#lastError });
-      }).finally(() => { this.#busy = false; });
+      this.#inFlight = this.#backgroundRound().finally(() => {
+        this.#busy = false;
+        this.#inFlight = null;
+      });
     }, this.#config.limits.schedulerPollMs);
     this.#timer.unref?.();
   }
 
-  /** Stop the interval loop, waiting for no in-flight round. */
-  stop(): void {
+  /** One background round: effects first, then one worker round, then effects. */
+  async #backgroundRound(): Promise<void> {
+    try {
+      await this.#effects?.tick();
+      await this.runOnce();
+      await this.#effects?.tick();
+    } catch (error) {
+      this.#lastError = error instanceof Error ? error.message : String(error);
+      this.#logger.error('worker round failed', { error: this.#lastError });
+    }
+  }
+
+  /**
+   * Stop the interval loop and wait for the in-flight round, so shutdown never
+   * closes SQLite under a running effect.
+   * @returns resolves when no round is running.
+   */
+  async stop(): Promise<void> {
     if (this.#timer !== null) {
       clearInterval(this.#timer);
       this.#timer = null;
+    }
+    if (this.#inFlight !== null) {
+      try { await this.#inFlight; } catch { /* reported by the round */ }
     }
   }
 

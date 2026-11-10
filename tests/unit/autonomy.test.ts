@@ -35,7 +35,10 @@ function makeStack(policy: Partial<AutonomyPolicy> = {}): Stack {
     projectStatus: () => 'active',
     rlpFormalRun: () => true,
     groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
-    jobFacts: () => ({ status: 'ingested', projectId: 'proj-1', teamId: 'team-a' }),
+    jobFacts: jobId => (jobId === 'job-1'
+      ? { status: 'ingested', projectId: 'proj-1', teamId: 'team-a', taskId: 'task-1',
+          manifestJson: JSON.stringify({ authorization: { rsi_experiment_id: 'X1' } }) }
+      : undefined),
   });
   return {
     engine,

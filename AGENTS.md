@@ -50,7 +50,7 @@ dispatch note. Keep these three in sync.
 
 ```bash
 npm run typecheck
-npm run test:all          # 156 tests at the fusion baseline
+npm run test:all          # 167 tests at the fusion baseline
 node scripts/check-dsh.mjs
 node scripts/ui-acceptance.mjs   # for UI changes; isolated profile only
 ```

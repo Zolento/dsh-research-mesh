@@ -80,7 +80,7 @@ Verified against **DSH 0.2.2-rc.1** (Node 24) and RLP **v2.2.0**.
 cd dsh-research-mesh
 node scripts/link-toolchain.mjs
 npm run typecheck
-npm run test:all          # 156 tests
+npm run test:all          # 167 tests
 
 # isolated Web UI acceptance (does not touch the user's profile)
 node scripts/ui-acceptance.mjs
