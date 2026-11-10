@@ -1,6 +1,6 @@
 {
   "plugin": "dsh-research-mesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "dsh": {
     "version": "0.2.2-rc.1",
     "verifiedPackage": "@deepseek-ai/dsh@0.2.2-rc.1",
@@ -8,7 +8,7 @@
     "sourceTag": "dsh-v0.2.2-rc.1",
     "sourceCommit": "66491b05e3",
     "node": "24.12.0",
-    "note": "Verified with a temporary npm install of the published rc1 package under Node 24; the local source checkout is at the rc1 tag."
+    "note": "Verified with the published rc1 package under Node 24 and an isolated Web UI acceptance; RLP v2.2.0 is the scientific layer."
   },
   "verifiedSeams": [
     "bundle patch row loaded by absolute path and by profile bundle",
@@ -38,5 +38,16 @@
     "installedPath": "/home/lenovo/.agents/skills/rsi-pipeline",
     "installSourceCommit": "2269957302bd0e8c1b18fdea7c5f9c229ddaa420",
     "pinKind": "advisory"
-  }
+  },
+  "verifiedAt": "2026-11-10",
+  "rlp": {
+    "skill": "research-lifecycle-protocol",
+    "version": "2.2.0",
+    "tag": "research-lifecycle-protocol/v2.2.0",
+    "commit": "97d5b6204f100d4e7e298b2a4770756e397a9143",
+    "installedPath": "/home/lenovo/.agents/skills/research-lifecycle-protocol",
+    "runtimeRoot": ".research-lifecycle-protocol",
+    "legacyRoot": ".research-idea-pipeline"
+  },
+  "releaseTag": "dsh-research-mesh-v0.2.0-dsh0.2.2-rc.1"
 }
