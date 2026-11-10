@@ -308,6 +308,15 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: await service.simulateLocalTask(projectId, teamId) });
         return;
       }
+      if (path === '/runtimes' && method === 'GET') {
+        send(res, 200, { ok: true, value: service.runtimeStatus() });
+        return;
+      }
+      if (path === '/runtimes/control-session' && method === 'POST') {
+        const body = await readJson(req);
+        send(res, 200, { ok: true, value: await service.ensureProjectControlSession(stringField(body, 'projectId')) });
+        return;
+      }
       if (path === '/autonomy' && method === 'GET') {
         const projectId = url.searchParams.get('projectId');
         if (projectId === null) throw new MeshError('INVALID_ARGUMENT', 'projectId is required');

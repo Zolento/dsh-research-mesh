@@ -9,6 +9,7 @@
 
 import { MeshError } from './errors.ts';
 import { RlpRuntime } from './rlp/index.ts';
+import { ProjectRuntime } from './app/project-runtime.ts';
 import type { RlpContextPlan, RlpContextPacket, RlpStorageResolution, RlpSubagentContract } from './rlp/types.ts';
 import type { RlpSubagentRole } from './rlp/subagent-context.ts';
 import { AutonomyStore } from './autonomy/store.ts';
@@ -142,6 +143,7 @@ export class MeshService {
   #worker: MeshWorker | null = null;
   #models: ModelResolver | null = null;
   #rlp: RlpRuntime | null = null;
+  readonly #runtimes = new Map<string, ProjectRuntime>();
   #rlpReady = false;
   #rlpStatusValue: import('./rlp/types.ts').RlpStorageStatus | null = null;
   #autoStore: AutonomyStore | null = null;
@@ -730,11 +732,73 @@ export class MeshService {
     return this.#effects;
   }
 
+  // -- per-project runtimes ------------------------------------------------
+
+  /**
+   * Get (or lazily build) one project's isolated runtime.
+   *
+   * Each runtime owns its own database, worktrees, artifacts, scheduler, worker
+   * and RLP resolver, so operations on one project cannot see another.
+   * @param projectId - registered project.
+   * @returns the runtime.
+   */
+  runtime(projectId: string): ProjectRuntime {
+    this.#requireReady();
+    const cached = this.#runtimes.get(projectId);
+    if (cached !== undefined) return cached;
+    const project = this.#requireStore().getProject(projectId);
+    if (project === undefined) throw new MeshError('PROJECT_NOT_FOUND', `unknown project ${projectId}`, { projectId });
+    const runtime = new ProjectRuntime({
+      baseConfig: this.#config,
+      logger: this.#logger,
+      sessionHost: this.#requireTeams().sessionHost,
+      settings: this.#settingsOverride ?? new MemoryModelSettingsStore(),
+      catalog: this.#catalogOverride ?? this.#createCatalog(),
+      ...(this.#transportOverride === undefined ? {} : { transport: this.#transportOverride }),
+      ...(this.#gpuProbeOverride === undefined ? {} : { gpuProbe: this.#gpuProbeOverride }),
+      onIngested: result => this.#recordArtifactIngested(result),
+    }, project);
+    this.#runtimes.set(projectId, runtime);
+    return runtime;
+  }
+
+  /** Every live project runtime, in registration order. */
+  runtimes(): readonly ProjectRuntime[] {
+    this.#requireReady();
+    for (const project of this.#requireStore().listProjects()) this.runtime(project.projectId);
+    return [...this.#runtimes.values()];
+  }
+
+  /**
+   * Ensure the project's resident control session ("项目主控").
+   * @param projectId - registered project.
+   * @returns the session id and whether it was created now.
+   */
+  async ensureProjectControlSession(projectId: string): Promise<{ sessionId: string; created: boolean }> {
+    const runtime = this.runtime(projectId);
+    await runtime.primeRlp();
+    const result = await runtime.ensureControlSession();
+    if (result.created) {
+      try { this.#requireProjects().bind(projectId, result.sessionId, 'control'); } catch { /* already bound */ }
+    }
+    return result;
+  }
+
+  /** Control-plane status of every project runtime. */
+  runtimeStatus(): readonly ReturnType<ProjectRuntime['status']>[] {
+    return this.runtimes().map(runtime => runtime.status());
+  }
+
   // -- projects and sessions ------------------------------------------------
 
 
   createProject(input: CreateProjectInput): ProjectView {
     const project = this.#requireProjects().create(input);
+    if (project.runnable) {
+      try { this.runtime(project.projectId); } catch (error) {
+        this.#logger.warn('project runtime initialization failed', { projectId: project.projectId, error: String(error) });
+      }
+    }
     if (project.runnable) {
       // Attaching the canonical project is the setup step: create the Mesh
       // control/worktree/artifact/store directories from runtime defaults.

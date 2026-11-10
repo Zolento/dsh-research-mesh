@@ -170,6 +170,7 @@ CREATE TABLE IF NOT EXISTS mesh_projects (
   control_dir TEXT,
   worktrees_dir TEXT,
   artifacts_dir TEXT,
+  control_session_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -340,6 +341,7 @@ function projectRow(row: Row): MeshProjectRecord {
     controlDir: nullableText(row, 'control_dir'),
     worktreesDir: nullableText(row, 'worktrees_dir'),
     artifactsDir: nullableText(row, 'artifacts_dir'),
+    controlSessionId: nullableText(row, 'control_session_id'),
     createdAt: text(row, 'created_at'),
     updatedAt: text(row, 'updated_at'),
   };
@@ -383,7 +385,7 @@ export class MeshStore {
       db.exec(DDL);
       const found = db.prepare('SELECT value FROM mesh_meta WHERE key = ?').get('schema_version') as Row | undefined;
       const projectColumns = db.prepare('PRAGMA table_info(mesh_projects)').all().map(row => String((row as Row).name));
-      for (const column of ['source_dir', 'control_dir', 'worktrees_dir', 'artifacts_dir']) {
+      for (const column of ['source_dir', 'control_dir', 'worktrees_dir', 'artifacts_dir', 'control_session_id']) {
         if (!projectColumns.includes(column)) db.exec(`ALTER TABLE mesh_projects ADD COLUMN ${column} TEXT`);
       }
       if (found === undefined) {
@@ -409,6 +411,14 @@ export class MeshStore {
   }
 
   // -- projects and session bindings ---------------------------------------
+
+  /** Record the resident control session of one project. */
+  setProjectControlSession(projectId: string, sessionId: string): void {
+    this.#store.transaction(db => {
+      db.prepare('UPDATE mesh_projects SET control_session_id = ?, updated_at = ? WHERE project_id = ?')
+        .run(sessionId, nowIso(), projectId);
+    });
+  }
 
   insertProject(record: MeshProjectRecord): void {
     this.#store.transaction(db => {

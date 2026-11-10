@@ -54,3 +54,49 @@ test('two independent repositories both become runnable projects with their own 
     second.cleanup();
   }
 });
+
+test('each project gets its own runtime: separate database, worker and control session', async () => {
+  const first = makeTempProject({ name: 'rt-a' });
+  const second = makeTempProject({ name: 'rt-b' });
+  const { service, host } = await makeService(first, { groups: ['group-a'] });
+  try {
+    const a = service.createProject({ name: 'rt-a', rsiStateRef: seedState(first.root), repositoryRef: first.source });
+    const b = service.createProject({ name: 'rt-b', rsiStateRef: seedState(second.root), repositoryRef: second.source });
+
+    const runtimeA = service.runtime(a.projectId);
+    const runtimeB = service.runtime(b.projectId);
+    assert.notEqual(runtimeA.config.databasePath, runtimeB.config.databasePath);
+    assert.notEqual(runtimeA.config.worktreesDir, runtimeB.config.worktreesDir);
+    assert.equal(runtimeA.config.projectRoot, first.source);
+    assert.equal(runtimeB.config.projectRoot, second.source);
+
+    // A group and a ticket in A are invisible to B.
+    const teamA = await runtimeA.teams.createTeam({ projectId: a.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    runtimeA.autonomy.receiveTrigger({
+      source: 'user', eventId: 'evt-a', projectId: a.projectId, kind: 'user_request',
+      explicit: true, payload: { routeId: 'A', title: 'work in A' },
+    });
+    assert.equal(runtimeA.autonomy.listTickets(a.projectId).length, 1);
+    assert.equal(runtimeB.autonomy.listTickets(b.projectId).length, 0);
+    assert.equal(runtimeA.teams.list(a.projectId).length, 1);
+
+    // The resident control session is created once and then reused.
+    const control = await service.ensureProjectControlSession(a.projectId);
+    assert.match(control.sessionId, /^test-control-/);
+    assert.equal(control.created, true);
+    const again = await service.ensureProjectControlSession(a.projectId);
+    assert.equal(again.sessionId, control.sessionId);
+    assert.equal(service.runtime(a.projectId).controlSessionId, control.sessionId);
+    assert.ok(host.roots.includes(control.sessionId));
+
+    const status = service.runtimeStatus();
+    assert.equal(status.length, 2);
+    assert.ok(status.some(entry => entry.projectId === a.projectId && entry.tickets === 1));
+    assert.ok(status.every(entry => entry.databasePath.endsWith('runtime.sqlite')));
+    void teamA;
+  } finally {
+    await service.close();
+    first.cleanup();
+    second.cleanup();
+  }
+});

@@ -194,6 +194,8 @@ export interface MeshProjectRecord {
   readonly worktreesDir: string | null;
   /** Per-project artifact store. */
   readonly artifactsDir: string | null;
+  /** Resident control session ("项目主控") bound to this project. */
+  readonly controlSessionId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }

@@ -220,6 +220,7 @@ export class ProjectRegistry {
       controlDir,
       worktreesDir: resolve(input.worktreesDir ?? join(controlDir, 'worktrees')),
       artifactsDir: resolve(input.artifactsDir ?? join(controlDir, 'artifacts')),
+      controlSessionId: null,
       createdAt: now,
       updatedAt: now,
     };
