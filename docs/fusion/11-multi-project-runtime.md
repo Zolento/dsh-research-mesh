@@ -72,7 +72,22 @@ assembly (own store, scheduler, worker, effects, autonomy, teams, workspaces,
 GPU, jobs, RLP), resident control session with reuse, `runtime()` /
 `runtimes()` / `runtimeStatus()` and the two new routes.
 
-Still on the shared path (follow-up): the legacy service methods for groups,
-tickets and jobs still resolve through the profile-level managers before the
-runtime; moving every one of them onto `runtime(projectId)` is the remaining
-step, tracked in `docs/fusion/10-audit-fixes.md` §11.
+## Routing
+
+Every project-scoped service method now resolves the owning runtime:
+
+- by `projectId`: `#teamsFor` / `#workspacesFor` / `#schedulerFor` / `#jobsFor` /
+  `#autonomyFor`;
+- by `teamId`, `taskId`, `jobId`, `workspaceId`, `ticketId` or `assignmentId`:
+  a scan of the live runtimes (then the registry's project list) finds the owner.
+
+Aggregate listings (`listTeams()`, `listJobs()`, `listWorkspaces()`) return the
+union of the legacy profile-level managers and every runtime, so a profile that
+predates per-project runtimes keeps working.
+
+The project row is mirrored into the runtime database, so the runtime's
+scheduler and autonomy engine read the real project status (pause/resume/archive
+take effect per project, not globally).
+
+Remaining: the RLP formal-run gate still checks the profile-level project root
+for the legacy path; per-project RLP readiness comes from `primeRlp()`.

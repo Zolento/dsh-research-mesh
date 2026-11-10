@@ -236,7 +236,13 @@ export class MeshService {
       const catalog = this.#catalogOverride ?? this.#createCatalog();
       const settings = this.#settingsOverride ?? new MemoryModelSettingsStore();
       const models = new ModelResolver(settings, catalog, this.#config.agent);
-      const projects = new ProjectRegistry(this.#config, store, this.#logger);
+      const projects = new ProjectRegistry(this.#config, store, this.#logger, teamId => {
+        for (const runtime of this.#runtimes.values()) {
+          const group = runtime.store.getGroup(teamId);
+          if (group !== undefined) return group;
+        }
+        return undefined;
+      });
       const teams = new TeamManager(this.#config, store, sessionHost, workspaces, this.#logger, models);
       const scheduler = new TaskScheduler(this.#config, store, this.#logger);
       const primary = this.#primaryWorker();
@@ -512,57 +518,57 @@ export class MeshService {
 
   /** Record one immutable Trigger and apply the deterministic Gate. */
   recordTrigger(input: TriggerInput): ReceiveResult {
-    return this.#requireAutonomy().receiveTrigger(input);
+    return this.#autonomyFor(input.projectId).receiveTrigger(input);
   }
 
   /** Create a Ticket explicitly from a previously accepted Trigger. */
   createTicket(input: CreateTicketInput): TicketRecord {
-    return this.#requireAutonomy().createTicket(input);
+    return this.#autonomyFor(input.projectId).createTicket(input);
   }
 
   listTickets(projectId: string): readonly TicketRecord[] {
-    return this.#requireAutonomy().listTickets(projectId);
+    return this.#autonomyFor(projectId).listTickets(projectId);
   }
 
   getTicket(ticketId: string): TicketRecord {
-    return this.#requireAutonomy().getTicket(ticketId);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).getTicket(ticketId);
   }
 
   listTriggers(projectId: string, limit?: number): readonly TriggerRecord[] {
-    return this.#requireAutonomy().listTriggers(projectId, limit);
+    return this.#autonomyFor(projectId).listTriggers(projectId, limit);
   }
 
   listTicketAssignments(ticketId: string): readonly AssignmentRecord[] {
-    return this.#requireAutonomy().listAssignments(ticketId);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).listAssignments(ticketId);
   }
 
   assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
-    this.#requireTeams().get(teamId);
-    return this.#requireAutonomy().assign(ticketId, teamId, options);
+    this.#teamsByTeam(teamId).get(teamId);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).assign(ticketId, teamId, options);
   }
 
   startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
-    return this.#requireAutonomy().startAssignment(assignmentId, options);
+    return this.#autonomyByAssignment(assignmentId).startAssignment(assignmentId, options);
   }
 
   finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }): AssignmentRecord {
-    return this.#requireAutonomy().finishAssignment(assignmentId, options);
+    return this.#autonomyByAssignment(assignmentId).finishAssignment(assignmentId, options);
   }
 
   markTicketCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
-    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).markCompute(ticketId, jobId, assignmentId);
   }
 
   waitTicketForHuman(ticketId: string, reason: string): TicketRecord {
-    return this.#requireAutonomy().waitForHuman(ticketId, reason);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).waitForHuman(ticketId, reason);
   }
 
   stopTicket(ticketId: string, reason: string, by = 'operator'): TicketRecord {
-    return this.#requireAutonomy().stopTicket(ticketId, by, reason);
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).stopTicket(ticketId, by, reason);
   }
 
   resumeTicket(ticketId: string, explicit = false): TicketRecord {
-    return this.#requireAutonomy().resumeTicket(ticketId, { explicit });
+    return (this.#runtimeByTicket(ticketId)?.autonomy ?? this.#requireAutonomy()).resumeTicket(ticketId, { explicit });
   }
 
   endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator'): TicketRecord {
@@ -578,8 +584,9 @@ export class MeshService {
    * @returns ended ticket with the proof digest recorded.
    */
   async completeResearchTicket(ticketId: string, experimentId: string, assurancePath?: string): Promise<TicketRecord> {
-    this.#refreshRlp();
-    const ticket = this.#requireAutonomy().getTicket(ticketId);
+    const owner = this.#runtimeByTicket(ticketId);
+    const autonomy = owner?.autonomy ?? this.#requireAutonomy();
+    const ticket = autonomy.getTicket(ticketId);
     if (ticket.kind !== 'research') {
       throw new MeshError('TICKET_STATE_INVALID', 'only research tickets require an RLP completion proof', { ticketId, kind: ticket.kind });
     }
@@ -588,7 +595,8 @@ export class MeshService {
         ticketId, experimentId, bound: ticket.experimentId,
       });
     }
-    const rlp = this.#requireRlp();
+    if (owner !== null) await owner.primeRlp();
+    const rlp = owner?.rlp.available === true ? owner.rlp : this.#requireRlp();
     const routeId = ticket.routeId;
     const resolution = await rlp.storage().resolve(this.#config.projectRoot);
     rlp.storage().assertFormalRun(resolution);
@@ -613,7 +621,7 @@ export class MeshService {
       verifiedAt: nowIso(),
       proofDigest: completion.proofDigest,
     };
-    return this.#requireAutonomy().endTicket(ticketId, 'completed', 'rlp-outcome', proof);
+    return autonomy.endTicket(ticketId, 'completed', 'rlp-outcome', proof);
   }
 
   #verifier(): CompletionVerifier {
@@ -650,14 +658,14 @@ export class MeshService {
     pendingEffects: number;
     recentCandidates: number;
   } {
-    const autonomy = this.#requireAutonomy();
+    const autonomy = this.#autonomyFor(projectId);
     const tickets = autonomy.listTickets(projectId);
     const triggers = autonomy.listTriggers(projectId, 50);
     return {
       mode: autonomy.policy.mode,
       policyVersion: autonomy.policy.version,
       openTickets: tickets.filter(ticket => ticket.status !== 'ended').length,
-      pendingEffects: this.#requireEffects().list('pending').length,
+      pendingEffects: this.runtime(projectId).effects.list('pending').length,
       recentCandidates: triggers.filter(trigger => trigger.disposition === 'candidate').length,
     };
   }
@@ -789,6 +797,120 @@ export class MeshService {
     return this.runtimes().map(runtime => runtime.status());
   }
 
+  // -- runtime routing -----------------------------------------------------
+  //
+  // Every project-scoped operation resolves the project's own runtime first, so
+  // a Mesh with N projects keeps N isolated control planes. The profile-level
+  // managers remain only as the fallback for a pre-runtime (legacy) project.
+
+  /** Runtime that owns one team, searching live runtimes before the legacy store. */
+  #runtimeByTeam(teamId: string): ProjectRuntime | null {
+    for (const runtime of this.#runtimes.values()) {
+      if (runtime.store.getGroup(teamId) !== undefined) return runtime;
+    }
+    if (this.#store !== null) {
+      for (const project of this.#store.listProjects()) {
+        const runtime = this.runtime(project.projectId);
+        if (runtime.store.getGroup(teamId) !== undefined) return runtime;
+      }
+    }
+    return null;
+  }
+
+  /** Teams manager for a project (runtime first, legacy fallback). */
+  #teamsFor(projectId: string): TeamManager {
+    try { return this.runtime(projectId).teams } catch { return this.#requireTeams() }
+  }
+
+  /** Teams manager that owns a team id. */
+  #teamsByTeam(teamId: string): TeamManager {
+    return this.#runtimeByTeam(teamId)?.teams ?? this.#requireTeams();
+  }
+
+  /** Workspace manager for a project. */
+  #workspacesFor(projectId: string): WorkspaceManager {
+    try { return this.runtime(projectId).workspaces } catch { return this.#requireWorkspaces() }
+  }
+
+  /** Workspace manager that owns a workspace id. */
+  #workspacesByWorkspace(workspaceId: string): WorkspaceManager {
+    for (const runtime of this.#runtimes.values()) {
+      if (runtime.store.getWorkspace(workspaceId) !== undefined) return runtime.workspaces;
+    }
+    if (this.#store !== null) {
+      for (const project of this.#store.listProjects()) {
+        const runtime = this.runtime(project.projectId);
+        if (runtime.store.getWorkspace(workspaceId) !== undefined) return runtime.workspaces;
+      }
+    }
+    return this.#requireWorkspaces();
+  }
+
+  /** Autonomy engine that owns one assignment. */
+  #autonomyByAssignment(assignmentId: string): AutonomyEngine {
+    for (const runtime of this.runtimes()) {
+      if (runtime.autonomyStore.getAssignment(assignmentId) !== undefined) return runtime.autonomy;
+    }
+    return this.#requireAutonomy();
+  }
+
+  /** Autonomy engine for a project (runtime first, legacy fallback). */
+  #autonomyFor(projectId: string): AutonomyEngine {
+    try { return this.runtime(projectId).autonomy } catch { return this.#requireAutonomy() }
+  }
+
+  /** Scheduler for a project (runtime first, legacy fallback). */
+  #schedulerFor(projectId: string): TaskScheduler {
+    try { return this.runtime(projectId).scheduler } catch { return this.#requireScheduler() }
+  }
+
+  /** Job service for a project. */
+  #jobsFor(projectId: string): ExperimentJobService {
+    try { return this.runtime(projectId).jobs } catch { return this.#requireJobs() }
+  }
+
+  /** Runtime that owns a task id, if any. */
+  #runtimeByTask(taskId: string): ProjectRuntime | null {
+    for (const runtime of this.#runtimes.values()) {
+      if (runtime.store.getTaskMeta(taskId) !== undefined) return runtime;
+    }
+    if (this.#store !== null) {
+      for (const project of this.#store.listProjects()) {
+        const runtime = this.runtime(project.projectId);
+        if (runtime.store.getTaskMeta(taskId) !== undefined) return runtime;
+      }
+    }
+    return null;
+  }
+
+  /** Runtime that owns a job id, if any. */
+  #runtimeByJob(jobId: string): ProjectRuntime | null {
+    for (const runtime of this.#runtimes.values()) {
+      if (runtime.store.getJob(jobId) !== undefined) return runtime;
+    }
+    if (this.#store !== null) {
+      for (const project of this.#store.listProjects()) {
+        const runtime = this.runtime(project.projectId);
+        if (runtime.store.getJob(jobId) !== undefined) return runtime;
+      }
+    }
+    return null;
+  }
+
+  /** Runtime that owns a ticket id, if any. */
+  #runtimeByTicket(ticketId: string): ProjectRuntime | null {
+    for (const runtime of this.#runtimes.values()) {
+      if (runtime.autonomyStore.getTicket(ticketId) !== undefined) return runtime;
+    }
+    if (this.#store !== null) {
+      for (const project of this.#store.listProjects()) {
+        const runtime = this.runtime(project.projectId);
+        if (runtime.autonomyStore.getTicket(ticketId) !== undefined) return runtime;
+      }
+    }
+    return null;
+  }
+
   // -- projects and sessions ------------------------------------------------
 
 
@@ -864,37 +986,47 @@ export class MeshService {
   reconcileProjectPauses(): void {
     this.#requireReady();
     for (const project of this.#requireProjects().list()) {
+      const runtime = this.#runtimes.get(project.projectId);
+      const teams = runtime?.teams ?? this.#requireTeams();
+      const store = runtime?.store ?? this.#requireStore();
       if (project.status === 'paused' || project.status === 'archived' || project.status === 'registered') {
-        const active = this.#requireTeams().list(project.projectId).filter(team => team.status === 'active');
-        this.#requireStore().recordProjectPauses(project.projectId, active.map(team => team.teamId));
-        for (const team of active) this.#requireTeams().pause(team.teamId);
+        const active = teams.list(project.projectId).filter(team => team.status === 'active');
+        store.recordProjectPauses(project.projectId, active.map(team => team.teamId));
+        for (const team of active) teams.pause(team.teamId);
       } else if (project.status === 'active') {
-        const parked = this.#requireStore().listProjectPauses(project.projectId);
+        const parked = store.listProjectPauses(project.projectId);
         for (const teamId of parked) {
-          const team = this.#requireTeams().list(project.projectId).find(candidate => candidate.teamId === teamId);
-          if (team !== undefined && team.status === 'paused') this.#requireTeams().resume(teamId);
+          const team = teams.list(project.projectId).find(candidate => candidate.teamId === teamId);
+          if (team !== undefined && team.status === 'paused') teams.resume(teamId);
         }
-        this.#requireStore().clearProjectPauses(project.projectId);
+        store.clearProjectPauses(project.projectId);
       }
     }
   }
 
   setProjectStatus(projectId: string, status: import('./storage/types.ts').MeshProjectStatus): ProjectView {
     const project = this.#requireProjects().setStatus(projectId, status);
+    const statusRuntime = this.#runtimes.get(projectId);
+    if (statusRuntime !== undefined) {
+      try { statusRuntime.store.updateProject(projectId, { status, updatedAt: new Date().toISOString() }) } catch { /* mirror only */ }
+    }
     // Pausing or archiving a project parks new claims through the groups that
     // were active. Running jobs are untouched. Only groups parked by the project
     // are restored on resume; a manually paused group stays paused.
+    const runtime = this.#runtimes.get(projectId);
+    const teams = runtime?.teams ?? this.#requireTeams();
+    const store = runtime?.store ?? this.#requireStore();
     if (status === 'paused' || status === 'archived' || status === 'registered') {
-      const active = this.#requireTeams().list(projectId).filter(team => team.status === 'active');
-      this.#requireStore().recordProjectPauses(projectId, active.map(team => team.teamId));
-      for (const team of active) this.#requireTeams().pause(team.teamId);
+      const active = teams.list(projectId).filter(team => team.status === 'active');
+      store.recordProjectPauses(projectId, active.map(team => team.teamId));
+      for (const team of active) teams.pause(team.teamId);
     } else if (status === 'active') {
-      const parked = this.#requireStore().listProjectPauses(projectId);
+      const parked = store.listProjectPauses(projectId);
       for (const teamId of parked) {
-        const team = this.#requireTeams().list(projectId).find(candidate => candidate.teamId === teamId);
-        if (team !== undefined && team.status === 'paused') this.#requireTeams().resume(teamId);
+        const team = teams.list(projectId).find(candidate => candidate.teamId === teamId);
+        if (team !== undefined && team.status === 'paused') teams.resume(teamId);
       }
-      this.#requireStore().clearProjectPauses(projectId);
+      store.clearProjectPauses(projectId);
     }
     return project;
   }
@@ -1004,29 +1136,30 @@ export class MeshService {
     this.#requireReady();
     const project = this.#requireProjects().get(projectId);
     const groups: WorkbenchGroup[] = [];
-    for (const team of this.#requireTeams().list(projectId)) {
+    const runtime = this.runtime(projectId);
+    for (const team of runtime.teams.list(projectId)) {
       if (team.status === 'destroyed') continue;
-      const subagents = this.#requireTeams().listSubagents(team.teamId);
-      const agentModels = subagents.map(subagent => this.#requireStore().getAgentModel(subagent.sessionId))
+      const subagents = runtime.teams.listSubagents(team.teamId);
+      const agentModels = subagents.map(subagent => runtime.store.getAgentModel(subagent.sessionId))
         .filter((record): record is import('./storage/types.ts').AgentModelRecord => record !== undefined);
-      const rootModel = this.#requireStore().getAgentModel(team.rootSessionId);
+      const rootModel = runtime.store.getAgentModel(team.rootSessionId);
       if (rootModel !== undefined) agentModels.unshift(rootModel);
       const liveStatus: Record<string, string | null> = {
         [team.rootSessionId]: this.#agents?.get?.(team.rootSessionId)?.status ?? null,
       };
       for (const subagent of subagents) liveStatus[subagent.sessionId] = this.#agents?.get?.(subagent.sessionId)?.status ?? null;
-      const workspace = team.workspaceId === null ? null : this.#requireStore().getWorkspace(team.workspaceId) ?? null;
+      const workspace = team.workspaceId === null ? null : runtime.store.getWorkspace(team.workspaceId) ?? null;
       groups.push({
         team,
         subagents,
         agentModels,
-        tasks: this.#requireScheduler().listByTeam(team.teamId),
+        tasks: runtime.scheduler.listByTeam(team.teamId),
         workspace,
         liveStatus,
       });
     }
-    const jobs = this.#requireJobs().list().filter(job => job.projectId === projectId);
-    const leases = this.#requireGpu().list();
+    const jobs = runtime.jobs.list().filter(job => job.projectId === projectId);
+    const leases = runtime.gpu.list();
     const rsi = this.#rsiSummary(project);
     const modelErrors = await this.modelSettingsDiagnostics();
     return {
@@ -1034,12 +1167,12 @@ export class MeshService {
       groups,
       jobs,
       gpuLeases: leases,
-      recentEvents: this.#requireStore().listRecentEvents(30),
+      recentEvents: runtime.store.listRecentEvents(30),
       rsi,
       rlp: await this.#rlpWorkbenchSummary(project),
       autonomy: this.autonomyStatus(projectId),
-      tickets: this.#requireAutonomy().listTickets(projectId),
-      triggers: this.#requireAutonomy().listTriggers(projectId, 20),
+      tickets: runtime.autonomy.listTickets(projectId),
+      triggers: runtime.autonomy.listTriggers(projectId, 20),
       modelErrors,
       worker: this.#requireWorker().status(),
       generatedAt: nowIso(),
@@ -1176,13 +1309,13 @@ export class MeshService {
 
   /** Create a demo local task and run one worker round, for the Workbench. */
   async simulateLocalTask(projectId: string, teamId?: string): Promise<import('./scheduler/scheduler.ts').MeshTaskView> {
-    const groups = this.#requireTeams().list(projectId);
+    const groups = this.#teamsFor(projectId).list(projectId);
     this.#assertProjectActive(projectId);
     const group = teamId === undefined
       ? groups.find(candidate => candidate.status === 'active')
       : groups.find(candidate => candidate.teamId === teamId);
     if (group === undefined) throw new MeshError('TEAM_NOT_FOUND', 'no active group is available for a local simulation', { projectId });
-    const task = this.#requireScheduler().submit({
+    const task = this.#schedulerFor(projectId).submit({
       projectId,
       teamId: group.teamId,
       type: 'local',
@@ -1193,8 +1326,8 @@ export class MeshService {
         argv: ['-c', 'print("dsh-research-mesh local simulation ok")'],
       },
     }).task;
-    const round = await this.#requireWorker().runOnce();
-    return round.task?.taskId === task.taskId ? round.task : this.#requireScheduler().get(task.taskId);
+    const round = await this.runtime(projectId).worker.runOnce();
+    return round.task?.taskId === task.taskId ? round.task : this.#schedulerFor(projectId).get(task.taskId);
   }
 
   // -- native delegation guard ---------------------------------------------
@@ -1217,7 +1350,7 @@ export class MeshService {
     const binding = this.#projects?.activeBinding(parentSessionId);
     if (binding === undefined) return undefined;
     if (binding.role === 'control') return undefined;
-    const team = this.#teams?.list().find(candidate => candidate.teamId === binding.groupId);
+    const team = this.#teamsByTeam(binding.groupId ?? '').get(binding.groupId ?? '');
     if (team === undefined) return undefined;
     if (binding.role === 'member') {
       return `Research Mesh: member sessions cannot delegate further (group ${team.name})`;
@@ -1225,12 +1358,13 @@ export class MeshService {
     if (team.status !== 'active') {
       return `Research Mesh: group ${team.name} is ${team.status}; native delegation is disabled`;
     }
-    if (this.#teams !== null) {
-      const inTeam = this.#teams.listSubagents(team.teamId).filter(member => member.status !== 'disposed').length;
+    {
+      const teams = this.#teamsByTeam(team.teamId);
+      const inTeam = teams.listSubagents(team.teamId).filter(member => member.status !== 'disposed').length;
       if (inTeam >= this.#config.limits.maxSubagentsPerTeam) {
         return `Research Mesh: group ${team.name} already has ${inTeam} subagents (limit ${this.#config.limits.maxSubagentsPerTeam})`;
       }
-      const total = this.#teams.totalSubagents();
+      const total = teams.totalSubagents();
       if (total >= this.#config.limits.maxSubagentsTotal) {
         return `Research Mesh: ${total} subagents exist globally (limit ${this.#config.limits.maxSubagentsTotal})`;
       }
@@ -1291,21 +1425,21 @@ export class MeshService {
         throw new MeshError('TEAM_STATE_INVALID', 'project is not active; resume it before creating a group', { projectId: input.projectId });
       }
     }
-    const team = await this.#requireTeams().createTeam(input);
+    const team = await this.#teamsFor(input.projectId).createTeam(input);
     if (projects !== null && projects.list().some(project => project.projectId === input.projectId)) {
       try {
         projects.bind(input.projectId, team.rootSessionId, 'captain', team.teamId);
       } catch (error) {
         // A group without its captain binding would be unreachable from the
         // Workbench and would still consume a slot, so retire it immediately.
-        try { await this.#requireTeams().destroy(team.teamId); } catch (cleanupError) {
+        try { await this.#teamsFor(input.projectId).destroy(team.teamId); } catch (cleanupError) {
           this.#logger.error('failed to retire group after captain binding failure', {
             teamId: team.teamId,
             error: String(cleanupError),
           });
         }
         if (team.workspaceId !== null) {
-          try { await this.#requireWorkspaces().cleanup(team.workspaceId, { confirm: true, force: true }); } catch (cleanupError) {
+          try { await this.#workspacesFor(input.projectId).cleanup(team.workspaceId, { confirm: true, force: true }); } catch (cleanupError) {
             this.#logger.error('failed to clean up worktree after captain binding failure', {
               teamId: team.teamId,
               workspaceId: team.workspaceId,
@@ -1320,24 +1454,27 @@ export class MeshService {
   }
 
   getTeam(teamId: string): TeamView {
-    return this.#requireTeams().get(teamId);
+    return this.#teamsByTeam(teamId).get(teamId);
   }
 
   /** Resume the persisted captain Session with the group's assigned model. */
   resumeRootSession(teamId: string): Promise<void> {
-    return this.#requireTeams().resumeRootSession(teamId);
+    return this.#teamsByTeam(teamId).resumeRootSession(teamId);
   }
 
   listTeams(projectId?: string): readonly TeamView[] {
-    return this.#requireTeams().list(projectId);
+    if (projectId !== undefined) return this.#teamsFor(projectId).list(projectId);
+    const fromRuntimes = this.runtimes().flatMap(runtime => runtime.teams.list());
+    const legacy = this.#teams?.list() ?? [];
+    return [...legacy, ...fromRuntimes];
   }
 
   pauseTeam(teamId: string): TeamView {
-    return this.#requireTeams().pause(teamId);
+    return this.#teamsByTeam(teamId).pause(teamId);
   }
 
   resumeTeam(teamId: string): TeamView {
-    return this.#requireTeams().resume(teamId);
+    return this.#teamsByTeam(teamId).resume(teamId);
   }
 
   /**
@@ -1347,12 +1484,15 @@ export class MeshService {
    * @returns updated group and cancelled task ids.
    */
   stopTeam(teamId: string): { team: TeamView; cancelled: readonly string[] } {
-    const team = this.#requireTeams().stop(teamId);
+    const runtime = this.#runtimeByTeam(teamId);
+    const teams = runtime?.teams ?? this.#requireTeams();
+    const scheduler = runtime?.scheduler ?? this.#requireScheduler();
+    const team = teams.stop(teamId);
     const cancelled: string[] = [];
-    for (const task of this.#requireScheduler().listByTeam(teamId)) {
+    for (const task of scheduler.listByTeam(teamId)) {
       if (task.status === 'PENDING' || task.status === 'READY') {
         try {
-          this.#requireScheduler().cancel(task.taskId, 'group stopped by operator');
+          scheduler.cancel(task.taskId, 'group stopped by operator');
           cancelled.push(task.taskId);
         } catch {
           // A concurrent claim moved it to RUNNING; leaving it alone is the
@@ -1364,19 +1504,22 @@ export class MeshService {
   }
 
   async destroyTeam(teamId: string): Promise<TeamView> {
-    const team = this.#requireTeams().get(teamId);
-    const destroyed = await this.#requireTeams().destroy(teamId);
+    const runtime = this.#runtimeByTeam(teamId);
+    const teams = runtime?.teams ?? this.#requireTeams();
+    const team = teams.get(teamId);
+    const destroyed = await teams.destroy(teamId);
     // Bindings are Mesh management state too; leaving them active would pin
     // the sessions to a destroyed group and block reuse.
     if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
       this.#projects.detach(team.rootSessionId);
-      for (const subagent of this.#requireTeams().listSubagents(teamId)) this.#projects.detach(subagent.sessionId);
+      for (const subagent of teams.listSubagents(teamId)) this.#projects.detach(subagent.sessionId);
     }
     return destroyed;
   }
 
   async registerSubagent(input: RegisterSubagentInput): Promise<SubagentView> {
-    const team = this.#requireTeams().get(input.teamId);
+    const teams = this.#teamsByTeam(input.teamId);
+    const team = teams.get(input.teamId);
     if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
       const project = this.#projects.get(team.researchProjectId);
       if (project.status !== 'active') {
@@ -1386,14 +1529,14 @@ export class MeshService {
         });
       }
     }
-    const subagent = await this.#requireTeams().registerSubagent(input);
+    const subagent = await teams.registerSubagent(input);
     if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
       try {
         this.#projects.bind(team.researchProjectId, subagent.sessionId, 'member', input.teamId);
       } catch (error) {
         // A partially registered member without a project binding is not a
         // usable Mesh identity; release it before surfacing the failure.
-        try { this.#requireTeams().releaseSubagent(input.teamId, subagent.sessionId); } catch { /* retain original */ }
+        try { teams.releaseSubagent(input.teamId, subagent.sessionId); } catch { /* retain original */ }
         throw error;
       }
     }
@@ -1401,8 +1544,9 @@ export class MeshService {
   }
 
   releaseSubagent(teamId: string, sessionId: string): void {
-    const team = this.#requireTeams().get(teamId);
-    this.#requireTeams().releaseSubagent(teamId, sessionId);
+    const teams = this.#teamsByTeam(teamId);
+    const team = teams.get(teamId);
+    teams.releaseSubagent(teamId, sessionId);
     // A released identity must not keep an active member binding, otherwise it
     // could never be re-registered in another group.
     if (this.#projects !== null && this.#projects.list().some(project => project.projectId === team.researchProjectId)) {
@@ -1411,43 +1555,52 @@ export class MeshService {
   }
 
   listSubagents(teamId: string): readonly SubagentView[] {
-    return this.#requireTeams().listSubagents(teamId);
+    return this.#teamsByTeam(teamId).listSubagents(teamId);
   }
 
   /** Return the recorded provider/model for one agent identity. */
   agentModel(sessionId: string): import('./storage/types.ts').AgentModelRecord | undefined {
-    return this.#requireStore().getAgentModel(sessionId);
+    const legacy = this.#store?.getAgentModel(sessionId);
+    if (legacy !== undefined) return legacy;
+    for (const runtime of this.runtimes()) {
+      const record = runtime.store.getAgentModel(sessionId);
+      if (record !== undefined) return record;
+    }
+    return undefined;
   }
 
   // -- workspaces ----------------------------------------------------------
 
   listWorkspaces(projectId?: string): readonly import('./storage/types.ts').MeshWorkspaceRecord[] {
-    return this.#requireWorkspaces().list(projectId);
+    if (projectId !== undefined) return this.#workspacesFor(projectId).list(projectId);
+    const fromRuntimes = this.runtimes().flatMap(runtime => runtime.workspaces.list());
+    const legacy = this.#workspaces?.list() ?? [];
+    return [...legacy, ...fromRuntimes];
   }
 
   inspectWorkspace(workspaceId: string): Promise<WorkspaceInspection> {
-    return this.#requireWorkspaces().inspect(workspaceId);
+    return this.#workspacesByWorkspace(workspaceId).inspect(workspaceId);
   }
 
   cleanupWorkspace(workspaceId: string, options: CleanupWorkspaceOptions): Promise<CleanupWorkspaceResult> {
-    return this.#requireWorkspaces().cleanup(workspaceId, options);
+    return this.#workspacesByWorkspace(workspaceId).cleanup(workspaceId, options);
   }
 
   /** Read a UTF-8 file through the workspace boundary. */
   readWorkspaceFile(workspaceId: string, path: string): string {
-    return this.#requireWorkspaces().files(workspaceId).readText(path);
+    return this.#workspacesByWorkspace(workspaceId).files(workspaceId).readText(path);
   }
 
   /** Atomically write a UTF-8 file through the workspace boundary. */
   writeWorkspaceFile(workspaceId: string, path: string, content: string): string {
-    return this.#requireWorkspaces().files(workspaceId).writeText(path, content);
+    return this.#workspacesByWorkspace(workspaceId).files(workspaceId).writeText(path, content);
   }
 
   // -- tasks ---------------------------------------------------------------
 
   submitTask(input: SubmitTaskInput): { task: MeshTaskView; created: boolean } {
     this.#assertProjectActive(input.projectId);
-    return this.#requireScheduler().submit(input);
+    return this.#schedulerFor(input.projectId).submit(input);
   }
 
   submitExperimentTask(input: SubmitExperimentTaskInput): { task: MeshTaskView; created: boolean } {
@@ -1462,7 +1615,7 @@ export class MeshService {
       ...(input.requiredArtifacts === undefined ? {} : { requiredArtifacts: input.requiredArtifacts }),
       ...(input.environment === undefined ? {} : { environment: input.environment }),
     };
-    return this.#requireScheduler().submit({
+    return this.#schedulerFor(input.projectId).submit({
       projectId: input.projectId,
       teamId: input.teamId,
       type: 'experiment',
@@ -1476,59 +1629,79 @@ export class MeshService {
   }
 
   getTask(taskId: string): MeshTaskView {
-    return this.#requireScheduler().get(taskId);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).get(taskId);
   }
 
   listTasksByTeam(teamId: string): readonly MeshTaskView[] {
-    return this.#requireScheduler().listByTeam(teamId);
+    return (this.#runtimeByTeam(teamId)?.scheduler ?? this.#requireScheduler()).listByTeam(teamId);
   }
 
   listTasksByProject(projectId: string): readonly MeshTaskView[] {
-    return this.#requireScheduler().listByProject(projectId);
+    return this.#schedulerFor(projectId).listByProject(projectId);
   }
 
   claimNext(workerId?: string): ClaimedTask | undefined {
-    return this.#requireScheduler().claimNext(workerId ?? this.#requireWorkerId());
+    const id = workerId ?? this.#requireWorkerId();
+    for (const runtime of this.runtimes()) {
+      const claimed = runtime.scheduler.claimNext(id);
+      if (claimed !== undefined) return claimed;
+    }
+    return this.#requireScheduler().claimNext(id);
   }
 
   /** Claim one named task through the explicit scheduler path. */
   claimTask(taskId: string, workerId?: string): ClaimedTask {
-    return this.#requireScheduler().claimTask(taskId, workerId ?? this.#requireWorkerId());
+    const scheduler = this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler();
+    return scheduler.claimTask(taskId, workerId ?? this.#requireWorkerId());
   }
 
   startTask(taskId: string, workerId: string, attemptId: string): MeshTaskView {
-    return this.#requireScheduler().start(taskId, workerId, attemptId);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).start(taskId, workerId, attemptId);
   }
 
   succeedTask(taskId: string, attemptId: string): MeshTaskView {
-    return this.#requireScheduler().succeed(taskId, attemptId);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).succeed(taskId, attemptId);
   }
 
   failTask(taskId: string, attemptId: string, code: string, message: string, retryable = false): MeshTaskView {
-    return this.#requireScheduler().fail(taskId, attemptId, code, message, retryable);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).fail(taskId, attemptId, code, message, retryable);
   }
 
   heartbeatTask(taskId: string, attemptId: string): MeshTaskView {
-    return this.#requireScheduler().heartbeat(taskId, attemptId);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).heartbeat(taskId, attemptId);
   }
 
   retryTask(taskId: string, options: { reason: string; extendAttempts?: boolean }): MeshTaskView {
-    return this.#requireScheduler().retry(taskId, options);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).retry(taskId, options);
   }
 
   cancelTask(taskId: string, reason: string): MeshTaskView {
-    return this.#requireScheduler().cancel(taskId, reason);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).cancel(taskId, reason);
   }
 
   blockTask(taskId: string, attemptId: string | null, code: string, message: string): MeshTaskView {
-    return this.#requireScheduler().block(taskId, attemptId, code, message);
+    return (this.#runtimeByTask(taskId)?.scheduler ?? this.#requireScheduler()).block(taskId, attemptId, code, message);
   }
 
   // -- worker and jobs -----------------------------------------------------
 
   async runWorkerOnce(options: { poll?: boolean } = {}): Promise<WorkerRoundResult> {
+    // One round per project runtime, then the legacy worker for a profile-level
+    // project that predates runtimes.
+    let result: WorkerRoundResult = { task: null, collected: [] };
+    for (const runtime of this.runtimes()) {
+      try {
+        await runtime.effects.tick();
+        const round = await runtime.worker.runOnce(options);
+        if (round.task !== null) result = round;
+        await runtime.effects.tick();
+      } catch (error) {
+        this.#logger.warn('project runtime round failed', { projectId: runtime.project.projectId, error: String(error) });
+      }
+    }
     await this.#requireEffects().tick();
-    const result = await this.#requireWorker().runOnce(options);
+    const legacy = await this.#requireWorker().runOnce(options);
+    if (legacy.task !== null) result = legacy;
     await this.#requireEffects().tick();
     return result;
   }
@@ -1589,16 +1762,19 @@ export class MeshService {
     return this.#requireWorker().status();
   }
 
-  listJobs(statuses?: readonly MeshJobStatus[]): readonly MeshJobRecord[] {
-    return this.#requireJobs().list(statuses);
+  listJobs(statuses?: readonly MeshJobStatus[], projectId?: string): readonly MeshJobRecord[] {
+    if (projectId !== undefined) return this.#jobsFor(projectId).list(statuses);
+    const fromRuntimes = this.runtimes().flatMap(runtime => runtime.jobs.list(statuses));
+    const legacy = this.#jobs?.list(statuses) ?? [];
+    return [...legacy, ...fromRuntimes];
   }
 
   queryJob(jobId: string): Promise<MeshTaskView> {
-    return this.#requireJobs().query(jobId);
+    return (this.#runtimeByJob(jobId)?.jobs ?? this.#requireJobs()).query(jobId);
   }
 
   async reconcileJob(jobId: string): Promise<MeshTaskView> {
-    const task = await this.#requireJobs().reconcile(jobId);
+    const task = await (this.#runtimeByJob(jobId)?.jobs ?? this.#requireJobs()).reconcile(jobId);
     await this.#recordArtifactIfIngested(jobId);
     return task;
   }
@@ -1606,7 +1782,7 @@ export class MeshService {
   collectJob(jobId: string): Promise<IngestionResult> {
     // The job executor emits the Artifact event from collect(), so every
     // ingestion path (poll, consumed shim, manual collect) shares one source.
-    return this.#requireJobs().collect(jobId);
+    return (this.#runtimeByJob(jobId)?.jobs ?? this.#requireJobs()).collect(jobId);
   }
 
   async #recordArtifactIfIngested(jobId: string): Promise<void> {
@@ -1628,7 +1804,7 @@ export class MeshService {
   }
 
   abandonJob(jobId: string, reason: string): MeshTaskView {
-    return this.#requireJobs().abandon(jobId, reason);
+    return (this.#runtimeByJob(jobId)?.jobs ?? this.#requireJobs()).abandon(jobId, reason);
   }
 
   async recover(): Promise<{

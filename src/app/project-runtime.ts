@@ -160,6 +160,14 @@ export class ProjectRuntime {
       workerId: this.workerId,
       effects: this.effects,
     });
+    // Mirror the registry row into the project's own database so its scheduler
+    // and autonomy engine read the real project status instead of assuming one.
+    const mirrored = this.store.getProject(project.projectId);
+    if (mirrored === undefined) {
+      try { this.store.insertProject(project) } catch { /* a concurrent runtime won the insert */ }
+    } else if (mirrored.status !== project.status) {
+      this.store.updateProject(project.projectId, { status: project.status, updatedAt: new Date().toISOString() });
+    }
     const existing = this.store.getProject(project.projectId);
     this.#controlSessionId = existing?.controlSessionId ?? null;
     // Without an RLP runtime the project is a plain engineering project; with

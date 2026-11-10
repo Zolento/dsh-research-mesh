@@ -87,10 +87,24 @@ export class ProjectRegistry {
   readonly #store: MeshStore;
   readonly #logger: MeshLogger;
 
-  constructor(config: MeshConfig, store: MeshStore, logger: MeshLogger) {
+  /** Group lookup used by bindings; a Mesh may keep groups in per-project runtimes. */
+  #groupLookup: ((teamId: string) => { projectId: string; status: string } | undefined) | null;
+
+  constructor(
+    config: MeshConfig,
+    store: MeshStore,
+    logger: MeshLogger,
+    groupLookup?: (teamId: string) => { projectId: string; status: string } | undefined,
+  ) {
     this.#config = config;
     this.#store = store;
     this.#logger = logger;
+    this.#groupLookup = groupLookup ?? null;
+  }
+
+  /** Let the service attach its cross-runtime group lookup after construction. */
+  setGroupLookup(lookup: (teamId: string) => { projectId: string; status: string } | undefined): void {
+    this.#groupLookup = lookup;
   }
 
   /**
@@ -285,7 +299,7 @@ export class ProjectRegistry {
       });
     }
     if ((role === 'captain' || role === 'member') && groupId !== null) {
-      const group = this.#store.getGroup(groupId);
+      const group = this.#store.getGroup(groupId) ?? this.#groupLookup?.(groupId);
       if (group === undefined || group.projectId !== projectId) {
         throw new MeshError('TEAM_NOT_FOUND', `${role} binding names a group outside this project`, { projectId, groupId });
       }

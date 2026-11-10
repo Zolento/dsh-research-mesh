@@ -118,3 +118,36 @@ test('the resident control session prefers the deployment default provider', asy
     project.cleanup();
   }
 });
+
+test('a project-scoped operation reaches only its own runtime', async () => {
+  const first = makeTempProject({ name: 'route-a' });
+  const second = makeTempProject({ name: 'route-b' });
+  const { service } = await makeService(first, { groups: ['group-a'] });
+  try {
+    const a = service.createProject({ name: 'route-a', rsiStateRef: seedState(first.root), repositoryRef: first.source });
+    const b = service.createProject({ name: 'route-b', rsiStateRef: seedState(second.root), repositoryRef: second.source });
+    const teamA = await service.createTeam({ projectId: a.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
+    const teamB = await service.createTeam({ projectId: b.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-b' });
+
+    // Team listing is project-scoped, not "everything in the process".
+    assert.deepEqual(service.listTeams(a.projectId).map(t => t.teamId), [teamA.teamId]);
+    assert.deepEqual(service.listTeams(b.projectId).map(t => t.teamId), [teamB.teamId]);
+
+    // A ticket and a task in A never appear in B.
+    service.recordTrigger({
+      source: 'user', eventId: 'evt-routing', projectId: a.projectId, kind: 'user_request',
+      explicit: true, payload: { routeId: 'A', title: 'work' },
+    });
+    assert.equal(service.listTickets(a.projectId).length, 1);
+    assert.equal(service.listTickets(b.projectId).length, 0);
+
+    // Pausing A leaves B untouched.
+    service.setProjectStatus(a.projectId, 'paused');
+    assert.equal(service.getTeam(teamA.teamId).status, 'paused');
+    assert.equal(service.getTeam(teamB.teamId).status, 'active');
+  } finally {
+    await service.close();
+    first.cleanup();
+    second.cleanup();
+  }
+});
