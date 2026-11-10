@@ -16,7 +16,7 @@ import { EffectsRunner, type EffectsTickReport } from './autonomy/effects.ts';
 import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from './autonomy/engine.ts';
 import type { AssignmentRecord, AutonomyPolicy, CompletionProof, CreateTicketInput, ReceiveResult, TicketRecord, TriggerInput, TriggerRecord } from './autonomy/types.ts';
 import { RlpCompletionVerifier, requireScientificPass, type CompletionVerifier } from './rlp/outcome.ts';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { authorizeAction } from './autonomy/authorize.ts';
 import type { MeshConfig } from './config/types.ts';
 import { ensureProjectLayout, type ProjectLayout } from './project.ts';
@@ -142,6 +142,8 @@ export class MeshService {
   #worker: MeshWorker | null = null;
   #models: ModelResolver | null = null;
   #rlp: RlpRuntime | null = null;
+  #rlpReady = false;
+  #rlpStatusValue: import('./rlp/types.ts').RlpStorageStatus | null = null;
   #autoStore: AutonomyStore | null = null;
   #effects: EffectsRunner | null = null;
   #autonomy: AutonomyEngine | null = null;
@@ -192,6 +194,17 @@ export class MeshService {
       teamStore = openTeamStore({ path: this.#config.databasePath });
       const store = new MeshStore(teamStore);
       const rlp = this.#createRlp();
+      let rlpReady = false;
+      let rlpStatusValue: import('./rlp/types.ts').RlpStorageStatus | null = null;
+      if (rlp.available) {
+        try {
+          const resolution = await rlp.storage().resolve(this.#config.projectRoot);
+          rlpReady = resolution.formalRunAllowed;
+          rlpStatusValue = resolution.status;
+        } catch (error) {
+          this.#logger.warn('RLP storage resolution failed at startup', { error: String(error) });
+        }
+      }
       const autoStore = new AutonomyStore(teamStore);
       const effects = new EffectsRunner(autoStore, {
         ...(this.#effectOwner === undefined ? {} : { owner: this.#effectOwner }),
@@ -207,10 +220,7 @@ export class MeshService {
             return project?.status ?? 'paused';
           } catch { return 'paused'; }
         },
-        rlpFormalRun: () => {
-          const layout = detectStorageLayout(this.#config.projectRoot);
-          return layout.kind !== 'legacy' && layout.kind !== 'ambiguous';
-        },
+        rlpFormalRun: () => this.#formalRunLayoutOk(),
         groupFacts: (teamId: string) => autoStore.groupFacts(teamId),
         handlers: {
           notice: payload => { store.appendEvent('trigger', String(payload.triggerId ?? 'unknown'), 'autonomy-notice', payload); },
@@ -256,11 +266,14 @@ export class MeshService {
         rsi,
         logger: this.#logger,
         workerId,
+        onIngested: result => this.#recordArtifactIngested(result),
       });
       this.#layout = layout;
       this.#teamStore = teamStore;
       this.#store = store;
       this.#rlp = rlp;
+      this.#rlpReady = rlpReady;
+      this.#rlpStatusValue = rlpStatusValue;
       this.#autoStore = autoStore;
       this.#effects = effects;
       this.#autonomy = autonomy;
@@ -441,7 +454,12 @@ export class MeshService {
    */
   async rlpStorage(projectRoot = this.#config.projectRoot): Promise<RlpStorageResolution> {
     const rlp = this.#requireRlp();
-    return await rlp.storage().resolve(projectRoot);
+    const resolution = await rlp.storage().resolve(projectRoot);
+    if (projectRoot === this.#config.projectRoot) {
+      this.#rlpReady = resolution.formalRunAllowed;
+      this.#rlpStatusValue = resolution.status;
+    }
+    return resolution;
   }
 
   /**
@@ -556,18 +574,33 @@ export class MeshService {
    * @param by - caller recorded on the ending event.
    * @returns ended ticket with the proof digest recorded.
    */
-  async completeResearchTicket(ticketId: string, experimentId: string, routeId: string): Promise<TicketRecord> {
+  async completeResearchTicket(ticketId: string, experimentId: string, assurancePath?: string): Promise<TicketRecord> {
     this.#refreshRlp();
     const ticket = this.#requireAutonomy().getTicket(ticketId);
     if (ticket.kind !== 'research') {
       throw new MeshError('TICKET_STATE_INVALID', 'only research tickets require an RLP completion proof', { ticketId, kind: ticket.kind });
     }
+    if (ticket.experimentId === null || ticket.experimentId !== experimentId) {
+      throw new MeshError('MANDATE_SCOPE_VIOLATION', 'experiment is not bound to this ticket job', {
+        ticketId, experimentId, bound: ticket.experimentId,
+      });
+    }
     const rlp = this.#requireRlp();
+    const routeId = ticket.routeId;
     const resolution = await rlp.storage().resolve(this.#config.projectRoot);
     rlp.storage().assertFormalRun(resolution);
     const statePath = rlp.storage().statePath(resolution, routeId);
-    const completion = await this.#verifier().verify({ statePath, experimentId });
+    const completion = await this.#verifier().verify({
+      statePath, experimentId, ...(assurancePath === undefined ? {} : { assurancePath }),
+    });
     requireScientificPass(completion);
+    // The proof must still match the file that RLP will act on.
+    const current = createHash('sha256').update(readFileSync(statePath)).digest('hex');
+    if (`sha256:${current}` !== completion.stateDigest) {
+      throw new MeshError('RLP_STATE_CHANGED', 'canonical state changed between the decision and completion', {
+        ticketId, expected: completion.stateDigest, actual: `sha256:${current}`,
+      });
+    }
     const proof: CompletionProof = {
       ticketId,
       experimentId,
@@ -643,6 +676,24 @@ export class MeshService {
         migration: 'python3 scripts/migrate_project_root.py inspect --project <project>',
       });
     }
+    if (this.#config.rlp.enabled && !this.#formalRunLayoutOk(projectRoot)) {
+      throw new MeshError('RLP_GATE_HOLD', 'RLP storage root is not READY for formal runs', {
+        projectRoot, status: this.#rlpStatusValue,
+      });
+    }
+  }
+
+  /**
+   * Synchronous READY approximation for hot paths: the new runtime root must
+   * exist with a routes directory. The asynchronous resolver remains the
+   * authoritative check for status reporting and health.
+   * @param projectRoot - project to check.
+   * @returns true when a new-root route tree exists.
+   */
+  #formalRunLayoutOk(projectRoot = this.#config.projectRoot): boolean {
+    const layout = detectStorageLayout(projectRoot);
+    if (layout.kind === 'legacy' || layout.kind === 'ambiguous') return false;
+    return existsSync(join(layout.newRoot, 'routes'));
   }
 
   async #requireRlpFormalRun(): Promise<void> {
@@ -1134,7 +1185,7 @@ export class MeshService {
         status: project.status,
       });
     }
-    this.#assertRlpFormalRunSync(project.repositoryRef);
+    this.#assertRlpFormalRunSync();
     const routeStatePath = input.researchStatePath ?? canonicalStatePath(this.#config.projectRoot, input.routeId);
     const routeState = readCanonicalStateFile(routeStatePath);
     if (!routeState.exists || routeState.version === null) {
@@ -1401,7 +1452,6 @@ export class MeshService {
   async runWorkerOnce(options: { poll?: boolean } = {}): Promise<WorkerRoundResult> {
     await this.#requireEffects().tick();
     const result = await this.#requireWorker().runOnce(options);
-    for (const collected of result.collected) this.#recordArtifactIngested(collected);
     await this.#requireEffects().tick();
     return result;
   }

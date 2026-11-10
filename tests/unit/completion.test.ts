@@ -2,7 +2,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openTeamStore } from '../../src/bridge/runtime/persistence.ts';
@@ -35,7 +36,7 @@ function makeStack(): Stack {
     policy: { ...DEFAULT_AUTONOMY_POLICY, mode: 'auto' },
     projectStatus: () => 'active',
     rlpFormalRun: () => true,
-    groupFacts: teamId => ({ teamId, projectId: 'proj-1', status: 'active' }),
+    groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
   });
   return { engine, cleanup: () => { teamStore.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -43,7 +44,7 @@ function makeStack(): Stack {
 function researchTicket(engine: AutonomyEngine): string {
   const received = engine.receiveTrigger({
     source: 'user', eventId: 'evt-r', projectId: 'proj-1', kind: 'user_request',
-    explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
+    explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research', experimentId: 'X1' },
   });
   assert.ok(received.ticket);
   return received.ticket.ticketId;
@@ -141,24 +142,27 @@ function seedReady(root: string): string {
   return statePath;
 }
 
-const passCompletion: ScientificCompletion = {
-  status: 'PASS', experimentId: 'X1', stateVersion: '3', stateDigest: 'sha256:state',
-  decision: '{"decision":"continue"}', proofDigest: 'sha256:pass', errors: [],
-};
+function passCompletionFor(statePath: string): ScientificCompletion {
+  const digest = createHash('sha256').update(readFileSync(statePath)).digest('hex');
+  return {
+    status: 'PASS', experimentId: 'X1', stateVersion: '3', stateDigest: `sha256:${digest}`,
+    decision: '{"decision":"continue"}', proofDigest: 'sha256:pass', errors: [],
+  };
+}
 
 test('the service verifies completion through the injected RLP verifier', opts, async () => {
   const project = makeTempProject();
   const state = seedReady(project.root);
   const { service } = await makeService(project, {
     config: { rlp: { enabled: true } },
-    completionVerifier: { verify: async () => passCompletion },
+    completionVerifier: { verify: async input => passCompletionFor(input.statePath) },
   });
   try {
     const created = service.createProject({ name: 'p', rsiStateRef: state, repositoryRef: project.source });
     const group = await service.createTeam({ projectId: created.projectId, routeId: 'A', name: 'group-a', rootSessionId: 'root-a' });
     const received = service.recordTrigger({
       source: 'user', eventId: 'evt-s', projectId: created.projectId, kind: 'user_request',
-      explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
+      explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research', experimentId: 'X1' },
     });
     assert.ok(received.ticket);
     const assignment = service.assignTicket(received.ticket.ticketId, group.teamId, {});
@@ -178,13 +182,13 @@ test('the service refuses completion when RLP returns HOLD', opts, async () => {
   const state = seedReady(project.root);
   const { service } = await makeService(project, {
     config: { rlp: { enabled: true } },
-    completionVerifier: { verify: async () => ({ ...passCompletion, status: 'HOLD', errors: ['evidence missing'] }) },
+    completionVerifier: { verify: async input => ({ ...passCompletionFor(input.statePath), status: 'HOLD', errors: ['evidence missing'] }) },
   });
   try {
     const created = service.createProject({ name: 'p', rsiStateRef: state, repositoryRef: project.source });
     const received = service.recordTrigger({
       source: 'user', eventId: 'evt-h', projectId: created.projectId, kind: 'user_request',
-      explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research' },
+      explicit: true, payload: { routeId: 'A', title: 'run X1', kind: 'research', experimentId: 'X1' },
     });
     assert.ok(received.ticket);
     await assert.rejects(

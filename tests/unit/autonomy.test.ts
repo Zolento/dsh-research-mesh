@@ -17,6 +17,7 @@ interface Stack {
   readonly engine: AutonomyEngine;
   readonly effects: EffectsRunner;
   readonly store: AutonomyStore;
+  readonly meshStore: MeshStore;
   readonly cleanup: () => void;
 }
 
@@ -33,12 +34,13 @@ function makeStack(policy: Partial<AutonomyPolicy> = {}): Stack {
     policy: { ...DEFAULT_AUTONOMY_POLICY, ...policy },
     projectStatus: () => 'active',
     rlpFormalRun: () => true,
-    groupFacts: teamId => ({ teamId, projectId: 'proj-1', status: 'active' }),
+    groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
   });
   return {
     engine,
     effects,
     store,
+    meshStore,
     cleanup: () => { teamStore.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 }
@@ -271,31 +273,23 @@ test('a reconcile-only effect is parked, never retried', async () => {
   }
 });
 
-test('a compute-completion event wakes a waiting ticket without ending it', () => {
-  const stack = makeStack();
+
+
+test('a stopped ticket is not reopened by an autonomous event', () => {
+  const stack = makeStack({ mode: 'auto' });
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-8')).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-9')).ticket;
     assert.ok(ticket);
-    const assignment = stack.engine.assign(ticket.ticketId, 'team-a');
-    stack.engine.startAssignment(assignment.assignmentId);
-    stack.engine.markCompute(ticket.ticketId, 'job-8', assignment.assignmentId);
-    assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'waiting_compute');
-    const wake = stack.engine.receiveTrigger({
-      source: 'compute_job',
-      eventId: 'job-8-done',
-      projectId: 'proj-1',
-      kind: 'compute_job_completed',
-      threadKey: 'compute:job-8',
-      ticketId: ticket.ticketId,
-      payload: { jobId: 'job-8' },
+    stack.engine.stopTicket(ticket.ticketId, 'alice', 'stop');
+    const event = stack.engine.receiveTrigger({
+      source: 'compute_job', eventId: 'job-9-done', projectId: 'proj-1',
+      kind: 'compute_job_completed', ticketId: ticket.ticketId, payload: { jobId: 'job-9' },
     });
-    assert.equal(wake.disposition, 'attached');
+    assert.equal(event.disposition, 'blocked');
     const after = stack.engine.getTicket(ticket.ticketId);
-    assert.equal(after.status, 'open');
-    assert.equal(after.endedAt, null);
-  } finally {
-    stack.cleanup();
-  }
+    assert.equal(after.status, 'ended');
+    assert.equal(after.endReason, 'stopped');
+  } finally { stack.cleanup(); }
 });
 
 test('a queued effect survives a restart and runs once', async () => {
@@ -323,26 +317,81 @@ test('a queued effect survives a restart and runs once', async () => {
   }
 });
 
-test('a stopped ticket is not reopened by an autonomous event', () => {
-  const stack = makeStack({ mode: 'auto' });
+test('an attaching follow-up does not upgrade a context subscription', () => {
+  const stack = makeStack();
   try {
-    const ticket = stack.engine.receiveTrigger(explicitInput('evt-9')).ticket;
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-sub')).ticket;
     assert.ok(ticket);
-    stack.engine.stopTicket(ticket.ticketId, 'alice', 'stop');
-    const event = stack.engine.receiveTrigger({
-      source: 'compute_job',
-      eventId: 'job-9-done',
-      projectId: 'proj-1',
-      kind: 'compute_job_completed',
-      ticketId: ticket.ticketId,
-      threadKey: 'compute:job-9',
-      payload: { jobId: 'job-9' },
+    stack.engine.subscribe(ticket.ticketId, 'thread-ctx', 'context');
+    stack.engine.receiveTrigger({
+      source: 'session', eventId: 'msg-ctx', projectId: 'proj-1', kind: 'session_message',
+      ticketId: ticket.ticketId, threadKey: 'thread-ctx', payload: {},
     });
-    assert.equal(event.disposition, 'blocked');
-    const after = stack.engine.getTicket(ticket.ticketId);
-    assert.equal(after.status, 'ended');
-    assert.equal(after.endReason, 'stopped');
-  } finally {
-    stack.cleanup();
-  }
+    const row = stack.store.listSubscriptions(ticket.ticketId).find(item => item.threadKey === 'thread-ctx');
+    assert.equal(row?.mode, 'context');
+  } finally { stack.cleanup(); }
+});
+
+test('only a terminal job event for its own job wakes a waiting_compute ticket', () => {
+  const stack = makeStack();
+  try {
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-wake')).ticket;
+    assert.ok(ticket);
+    const assignment = stack.engine.assign(ticket.ticketId, 'team-a', { taskId: 'task-1' });
+    // Persist the compute binding directly: this test exercises the trigger
+    // wake rule, while markCompute's job checks have their own test below.
+    stack.store.updateAssignment({ ...assignment, status: 'ended', jobId: 'job-1' });
+    stack.store.updateTicket({
+      ...stack.engine.getTicket(ticket.ticketId), status: 'waiting_compute',
+      experimentId: 'X1', waitingReason: 'compute job job-1',
+    });
+    assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'waiting_compute');
+
+    stack.engine.receiveTrigger({
+      source: 'session', eventId: 'msg-1', projectId: 'proj-1', kind: 'session_message',
+      ticketId: ticket.ticketId, payload: {},
+    });
+    assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'waiting_compute');
+
+    stack.engine.receiveTrigger({
+      source: 'compute_job', eventId: 'job-1-done', projectId: 'proj-1', kind: 'compute_job_completed',
+      ticketId: ticket.ticketId, payload: { jobId: 'job-1' },
+    });
+    assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'open');
+  } finally { stack.cleanup(); }
+});
+
+test('markCompute rejects an assignment of another ticket and an unknown job', () => {
+  const stack = makeStack();
+  try {
+    const first = stack.engine.receiveTrigger(explicitInput('evt-a')).ticket;
+    const second = stack.engine.receiveTrigger(explicitInput('evt-b')).ticket;
+    assert.ok(first && second);
+    const assignment = stack.engine.assign(first.ticketId, 'team-a', { taskId: 'task-1' });
+    assert.equal(
+      codeOf(() => stack.engine.markCompute(second.ticketId, 'job-1', assignment.assignmentId)),
+      'TICKET_STATE_INVALID',
+    );
+    assert.equal(
+      codeOf(() => stack.engine.markCompute(first.ticketId, 'job-missing', assignment.assignmentId)),
+      'TASK_NOT_FOUND',
+    );
+  } finally { stack.cleanup(); }
+});
+
+test('a group on another route cannot execute the ticket', () => {
+  const stack = makeStack();
+  try {
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-route')).ticket;
+    assert.ok(ticket);
+    const wrongRoute = new AutonomyEngine({
+      store: stack.store,
+      effects: new EffectsRunner(stack.store),
+      meshStore: stack.meshStore,
+      projectStatus: () => 'active',
+      rlpFormalRun: () => true,
+      groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'B', status: 'active' }),
+    });
+    assert.equal(codeOf(() => wrongRoute.assign(ticket.ticketId, 'team-a')), 'POLICY_BLOCKED');
+  } finally { stack.cleanup(); }
 });

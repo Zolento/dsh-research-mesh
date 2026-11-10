@@ -20,7 +20,7 @@ function openEngine(path: string): { engine: AutonomyEngine; teamStore: ReturnTy
     meshStore: new MeshStore(teamStore),
     projectStatus: () => 'active',
     rlpFormalRun: () => true,
-    groupFacts: teamId => ({ teamId, projectId: 'proj-1', status: 'active' }),
+    groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
   });
   return { engine, teamStore };
 }

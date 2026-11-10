@@ -79,11 +79,34 @@ No blanket reset of `running`. Unknown remote outcomes are never re-executed.
 HOLD/FAIL, missing or invalid state, and a changed skill refuse completion.
 Mesh does not re-implement Evidence Qualification.
 
+## 5.1 Second review round (2026-11-10)
+
+The independent re-review found integration-boundary gaps; all are fixed:
+
+| Finding | Fix |
+|---|---|
+| RLP decision called without `--assurance`, so PASS was impossible | `RlpCompletionVerifier` locates `<route>/assurance/outcome/<analysis_id>.json`, passes `--assurance`, maps `NEEDS_REVIEW` to HOLD and re-reads the state digest after the decision |
+| Completion not bound to the Ticket's route/experiment/job | `completeResearchTicket` derives the route from the ticket, requires `ticket.experimentId === experimentId`, and re-hashes the canonical state before ending |
+| Experiment learned from a job was not persisted | `mesh_tickets.experiment_id`; `markCompute` reads the job manifest's RLP experiment and refuses a mismatch |
+| `markCompute` accepted another ticket's assignment or an unknown job | assignment must belong to the ticket, the job must exist in the same project and match the assignment task |
+| Context subscription could be upgraded by an attaching event | attach path keeps an existing `context` mode; only a new relation becomes `owned` |
+| Ordinary messages released `waiting_compute` | only `compute_job_completed` / `artifact_ingested` with the ticket's own `jobId` may wake it; `compute_job_failed` parks for a human |
+| Background worker bypassed the artifact event | `MeshWorker` emits `onIngested` from every collect path; the service callback records the same idempotent event |
+| Group route not checked | `GroupFacts.routeId` must equal `ticket.routeId` for assign/start |
+| Mandate absence not fatal | any action requiring an operation now refuses a ticket without a Mandate |
+| RLP formal-run gate too loose | the service requires a new-root routes tree; the async resolver remains authoritative for reporting |
+| Effects could write back after lease loss | `finishEffect` is owner-fenced and the runner renews the lease while a handler runs |
+| Two active assignments possible under concurrency | partial unique index `uq_mesh_assignment_active` |
+
+Real-RLP tests (no mocked decision) use RLP's own `apply` + `assurance-store` in
+`tests/fixtures/rlp_completion_fixture.py` and cover PASS, NEEDS_REVIEW, FAIL,
+stale assurance, and an unbound XID.
+
 ## 6. Test evidence
 
 ```
 npm run typecheck     PASS
-npm run test:all      145 tests, 145 pass, 0 fail
+npm run test:all      153 tests, 153 pass, 0 fail
 node scripts/check-dsh.mjs
   installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
   @deepseek-ai/schemastery 3.19.0; PASS
@@ -91,9 +114,10 @@ node scripts/ui-acceptance.mjs   PASS (isolated profile, 3 groups, model
   settings, dark mode, 1440/1280/768/390 no overflow)
 ```
 
-New suites: `completion` (6), `boundaries` (5), `effects-recovery` (5),
-`policy` (4), `migrations` (1). The identity suite and its HTTP test were removed
-with P0-01.
+New suites: `rlp-completion` (5, real RLP apply/assurance/decision),
+`completion` (6), `boundaries` (5), `effects-recovery` (5), `policy` (4),
+`migrations` (1), plus new autonomy cases for subscriptions, wake and job
+ownership. The identity suite was removed with P0-01.
 
 ## 7. Not verified
 

@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS mesh_tickets (
   status TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'engineering',
   outcome_ref TEXT,
+  experiment_id TEXT,
   mandate_id TEXT NOT NULL REFERENCES mesh_mandates(mandate_id),
   group_id TEXT,
   priority INTEGER NOT NULL,
@@ -159,6 +160,8 @@ CREATE TABLE IF NOT EXISTS mesh_meta (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_mesh_assignments_job
   ON mesh_assignments(job_id) WHERE job_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mesh_assignment_active
+  ON mesh_assignments(ticket_id) WHERE status IN ('pending', 'running');
 `;
 
 type Row = Record<string, unknown>;
@@ -220,6 +223,7 @@ function ticketFrom(row: Row): TicketRecord {
     status: str(row, 'status') as TicketStatus,
     kind: (str(row, 'kind') === 'research' ? 'research' : 'engineering'),
     outcomeRef: nullableStr(row, 'outcome_ref'),
+    experimentId: nullableStr(row, 'experiment_id'),
     mandateId: str(row, 'mandate_id'),
     groupId: nullableStr(row, 'group_id'),
     priority: num(row, 'priority'),
@@ -296,6 +300,9 @@ export class AutonomyStore {
     if (!columns('mesh_tickets').includes('outcome_ref')) {
       db.exec('ALTER TABLE mesh_tickets ADD COLUMN outcome_ref TEXT');
     }
+    if (!columns('mesh_tickets').includes('experiment_id')) {
+      db.exec('ALTER TABLE mesh_tickets ADD COLUMN experiment_id TEXT');
+    }
     if (!columns('mesh_effects').includes('owner')) {
       db.exec('ALTER TABLE mesh_effects ADD COLUMN owner TEXT');
       db.exec('ALTER TABLE mesh_effects ADD COLUMN claimed_at TEXT');
@@ -316,7 +323,7 @@ export class AutonomyStore {
     db.exec('DROP INDEX IF EXISTS uq_mesh_assignments_job');
     db.exec('DROP TABLE IF EXISTS mesh_threads');
     db.exec('DROP TABLE IF EXISTS mesh_policy');
-    for (const column of ['kind', 'outcome_ref']) {
+    for (const column of ['kind', 'outcome_ref', 'experiment_id']) {
       try { db.exec(`ALTER TABLE mesh_tickets DROP COLUMN ${column}`); } catch { /* older sqlite */ }
     }
     for (const column of ['owner', 'claimed_at', 'lease_expires_at']) {
@@ -415,12 +422,13 @@ export class AutonomyStore {
     this.transaction(db => {
       db.prepare(`INSERT INTO mesh_tickets
         (ticket_id, project_id, route_id, kind, title, objective, status, mandate_id, group_id, priority,
-         autonomous, idempotency_key, scope_json, waiting_reason, created_at, updated_at, ended_at, end_reason, outcome_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         autonomous, idempotency_key, scope_json, waiting_reason, created_at, updated_at, ended_at, end_reason,
+         outcome_ref, experiment_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         record.ticketId, record.projectId, record.routeId, record.kind, record.title, record.objective, record.status,
         record.mandateId, record.groupId, record.priority, record.autonomous ? 1 : 0, record.idempotencyKey,
         record.scopeJson, record.waitingReason, record.createdAt, record.updatedAt, record.endedAt, record.endReason,
-        record.outcomeRef,
+        record.outcomeRef, record.experimentId,
       );
     });
   }
@@ -438,9 +446,9 @@ export class AutonomyStore {
   updateTicket(record: TicketRecord): void {
     this.transaction(db => {
       db.prepare(`UPDATE mesh_tickets SET status = ?, group_id = ?, mandate_id = ?, scope_json = ?, waiting_reason = ?,
-        updated_at = ?, ended_at = ?, end_reason = ?, outcome_ref = ? WHERE ticket_id = ?`).run(
+        updated_at = ?, ended_at = ?, end_reason = ?, outcome_ref = ?, experiment_id = ? WHERE ticket_id = ?`).run(
         record.status, record.groupId, record.mandateId, record.scopeJson, record.waitingReason, record.updatedAt,
-        record.endedAt, record.endReason, record.outcomeRef, record.ticketId,
+        record.endedAt, record.endReason, record.outcomeRef, record.experimentId, record.ticketId,
       );
     });
   }
@@ -657,13 +665,24 @@ export class AutonomyStore {
     return row === undefined ? undefined : String(row.project_id);
   }
 
+  /** One Mesh job row, read from the shared database. */
+  job(jobId: string): { jobId: string; taskId: string; projectId: string; teamId: string; manifestJson: string } | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_jobs WHERE job_id = ?').get(jobId) as Row | undefined);
+    if (row === undefined) return undefined;
+    return {
+      jobId: String(row.job_id), taskId: String(row.task_id), projectId: String(row.project_id),
+      teamId: String(row.team_id), manifestJson: String(row.manifest_json),
+    };
+  }
+
   /** Group facts for authorization, read from the Mesh registry. */
-  groupFacts(teamId: string): { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined {
-    const row = this.read(db => db.prepare('SELECT project_id, status FROM mesh_groups WHERE team_id = ?').get(teamId) as Row | undefined);
+  groupFacts(teamId: string): { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined {
+    const row = this.read(db => db.prepare('SELECT project_id, route_id, status FROM mesh_groups WHERE team_id = ?').get(teamId) as Row | undefined);
     if (row === undefined) return undefined;
     return {
       teamId,
       projectId: String(row.project_id),
+      routeId: String(row.route_id),
       status: String(row.status) as import('../storage/types.ts').MeshGroupStatus,
     };
   }
@@ -673,14 +692,34 @@ export class AutonomyStore {
     nextRunAt?: string;
     attempts?: number;
     at?: string;
-  } = {}): void {
+    owner?: string;
+  } = {}): boolean {
     const at = options.at ?? nowIso();
-    this.transaction(db => {
-      db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
-        next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
-        lease_expires_at = NULL, updated_at = ? WHERE effect_id = ?`).run(
-        status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
-      );
+    return this.transaction(db => {
+      const result = options.owner === undefined
+        ? db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
+            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
+            lease_expires_at = NULL, updated_at = ? WHERE effect_id = ?`).run(
+            status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
+          )
+        : db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
+            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
+            lease_expires_at = NULL, updated_at = ?
+            WHERE effect_id = ? AND owner = ? AND status = 'running'`).run(
+            status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
+            options.owner,
+          );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  /** Extend a live claim; false when ownership was lost to recovery. */
+  renewClaim(effectId: string, owner: string, leaseMs: number, at = nowIso()): boolean {
+    const lease = new Date(Date.parse(at) + leaseMs).toISOString();
+    return this.transaction(db => {
+      const result = db.prepare(`UPDATE mesh_effects SET lease_expires_at = ?, updated_at = ?
+        WHERE effect_id = ? AND owner = ? AND status = 'running'`).run(lease, at, effectId, owner);
+      return Number(result.changes) === 1;
     });
   }
 

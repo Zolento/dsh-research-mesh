@@ -66,6 +66,8 @@ export interface ProjectFacts {
 export interface GroupFacts {
   readonly teamId: string;
   readonly projectId: string;
+  /** Research route the group was created for. */
+  readonly routeId: string;
   readonly status: MeshGroupStatus;
 }
 
@@ -171,6 +173,12 @@ export function authorizeAction(input: AuthorizeInput): void {
     }
     if ((action === 'ticket.assign' || action === 'assignment.start') && input.group.status !== 'active') {
       deny('POLICY_BLOCKED', 'group is not active', { teamId: input.group.teamId, status: input.group.status });
+    }
+    if (ticket !== undefined && (action === 'ticket.assign' || action === 'assignment.start')
+      && input.group.routeId !== ticket.routeId) {
+      deny('POLICY_BLOCKED', 'group route differs from the ticket route', {
+        teamId: input.group.teamId, groupRoute: input.group.routeId, ticketRoute: ticket.routeId,
+      });
     }
   }
 

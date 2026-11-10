@@ -25,7 +25,7 @@ test('v2 schema upgrades, rolls back and upgrades again without losing rows', ()
       policy: { ...DEFAULT_AUTONOMY_POLICY, mode: 'auto' },
       projectStatus: () => 'active',
       rlpFormalRun: () => true,
-      groupFacts: teamId => ({ teamId, projectId: 'proj-1', status: 'active' }),
+      groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
     });
     const ticket = engine.receiveTrigger({
       source: 'user', eventId: 'evt-1', projectId: 'proj-1', kind: 'user_request',

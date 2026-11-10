@@ -7,7 +7,7 @@ Date: 2026-11-10 · Branch `feat/rlp-v2.2-fusion`
 ```bash
 cd dsh-research-mesh
 npm run typecheck     # tsc -p tsconfig.json --noEmit   → PASS (exit 0)
-npm run test:all      # node --test 'tests/**/*.test.ts' → 145/145 pass
+npm run test:all      # node --test 'tests/**/*.test.ts' → 153/153 pass
 node scripts/check-dsh.mjs
 # check-dsh: installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
 # check-dsh: @deepseek-ai/schemastery 3.19.0; PASS
@@ -20,14 +20,14 @@ node scripts/ui-acceptance.mjs  # PASS (isolated profile, headless Chrome)
 
 | Suite | Tests | Result |
 |---|---|---|
-| unit | 129 | pass |
-| integration | 11 | pass |
+| unit | 132 | pass |
+| integration | 16 | pass |
 | e2e | 5 | pass |
-| **total** | **145** | **pass, 0 fail, 0 skip** |
+| **total** | **153** | **pass, 0 fail, 0 skip** |
 
 Baseline before the branch: 99 tests, 69 pass / 30 fail — every failure was the
 missing old `rsi-pipeline` install. Migration to the RLP v2.2.0 skill restored
-those 99 (98 + one semantics update), and the fusion added 46 new tests.
+those 99 (98 + one semantics update), and the fusion added 54 new tests.
 
 ## 3. New coverage
 

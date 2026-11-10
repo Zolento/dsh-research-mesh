@@ -210,36 +210,47 @@ export class EffectsRunner {
         dead += 1;
         continue;
       }
+      // Keep the claim alive while a slow handler runs; if renewal fails the
+      // claim was recovered by another worker and this task must not write back.
+      const renewal = setInterval(() => {
+        this.#store.renewClaim(row.effectId, this.#owner, this.#leaseMs);
+      }, Math.max(1_000, Math.floor(this.#leaseMs / 2)));
+      renewal.unref?.();
       try {
         const outcome = await handler.run(payload, row);
         if (outcome === 'defer') {
           this.#store.finishEffect(row.effectId, 'pending', {
             nextRunAt: isoFromMs(this.#now() + this.#baseDelayMs),
             attempts: row.attempts,
+            owner: this.#owner,
           });
           deferred += 1;
           continue;
         }
-        this.#store.finishEffect(row.effectId, 'succeeded', { attempts: row.attempts + 1 });
+        this.#store.finishEffect(row.effectId, 'succeeded', { attempts: row.attempts + 1, owner: this.#owner });
         done += 1;
       } catch (error) {
         const attempts = row.attempts + 1;
         const message = errorText(error);
         if (handler.retry === 'reconcile-only') {
-          this.#store.finishEffect(row.effectId, 'failed', { attempts, error: `${message}; reconcile before retry` });
+          this.#store.finishEffect(row.effectId, 'failed', {
+            attempts, error: `${message}; reconcile before retry`, owner: this.#owner,
+          });
           failed += 1;
           continue;
         }
         if (attempts >= row.maxAttempts) {
-          this.#store.finishEffect(row.effectId, 'dead', { attempts, error: message });
+          this.#store.finishEffect(row.effectId, 'dead', { attempts, error: message, owner: this.#owner });
           dead += 1;
           continue;
         }
         const delay = Math.min(this.#baseDelayMs * 2 ** (attempts - 1), this.#maxDelayMs);
         this.#store.finishEffect(row.effectId, 'pending', {
-          attempts, error: message, nextRunAt: isoFromMs(this.#now() + delay),
+          attempts, error: message, nextRunAt: isoFromMs(this.#now() + delay), owner: this.#owner,
         });
         failed += 1;
+      } finally {
+        clearInterval(renewal);
       }
     }
     return { processed: due.length, done, deferred, failed, dead, recovered: recovery.replayed + recovery.parked };

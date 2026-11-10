@@ -32,6 +32,7 @@ function makeStack(): Stack {
     groupFacts: teamId => ({
       teamId,
       projectId: teamId === 'team-other' ? 'proj-2' : 'proj-1',
+      routeId: 'A',
       status: 'active',
     }),
   });

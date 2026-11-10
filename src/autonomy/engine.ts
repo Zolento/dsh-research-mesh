@@ -75,7 +75,7 @@ export interface AutonomyEngineOptions {
   /** Whether the project's RLP root permits formal runs. */
   readonly rlpFormalRun?: (projectId: string) => boolean;
   /** Group lookup; the service supplies the real Mesh registry. */
-  readonly groupFacts?: (teamId: string) => { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
+  readonly groupFacts?: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
 }
 
 /** Operations an explicit Mandate may carry. */
@@ -98,7 +98,7 @@ export class AutonomyEngine {
   readonly #now: () => number;
   readonly #projectStatus: (projectId: string) => 'active' | 'paused' | 'archived' | 'registered';
   readonly #rlpFormalRun: (projectId: string) => boolean;
-  readonly #groupFacts: (teamId: string) => { teamId: string; projectId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
+  readonly #groupFacts: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
   #policy: AutonomyPolicy;
 
   /**
@@ -245,12 +245,24 @@ export class AutonomyEngine {
       if (ticket.status === 'ended' && ticket.endReason === 'stopped') {
         return { disposition: 'blocked', ticket, reason: 'ticket was stopped by a person; it receives nothing' };
       }
-      this.#store.upsertSubscription(ticket.ticketId, trigger.threadKey, 'owned');
-      // A compute-completion event wakes a parked ticket back to open work; it
-      // never skips the evidence gate of a ticket waiting for RLP.
-      if (ticket.status === 'waiting_compute') {
-        this.#store.updateTicket({ ...ticket, status: 'open', waitingReason: null, updatedAt: nowIso() });
-        this.#event('ticket', ticket.ticketId, 'woken-by-trigger', { triggerId: trigger.triggerId, kind: trigger.kind });
+      const existing = this.#store.listSubscriptions(ticket.ticketId).find(row => row.threadKey === trigger.threadKey);
+      // A context-only relation is never upgraded by an attaching event.
+      if (existing === undefined) this.#store.upsertSubscription(ticket.ticketId, trigger.threadKey, 'owned');
+      // Only a terminal compute/artifact event for the ticket's own job may move
+      // it out of waiting_compute; ordinary context never releases the wait.
+      const jobId = (input.payload as Record<string, unknown> | undefined)?.jobId;
+      const linked = typeof jobId === 'string'
+        && this.#store.listAssignments(ticket.ticketId).some(assignment => assignment.jobId === jobId);
+      if (ticket.status === 'waiting_compute' && linked) {
+        if (trigger.kind === 'compute_job_failed') {
+          this.#store.updateTicket({
+            ...ticket, status: 'waiting_human', waitingReason: `compute job ${jobId} failed`, updatedAt: nowIso(),
+          });
+          this.#event('ticket', ticket.ticketId, 'compute-failed', { triggerId: trigger.triggerId, jobId });
+        } else if (trigger.kind === 'compute_job_completed' || trigger.kind === 'artifact_ingested') {
+          this.#store.updateTicket({ ...ticket, status: 'open', waitingReason: null, updatedAt: nowIso() });
+          this.#event('ticket', ticket.ticketId, 'woken-by-trigger', { triggerId: trigger.triggerId, kind: trigger.kind, jobId });
+        }
       }
       this.#event('ticket', ticket.ticketId, 'trigger-attached', { triggerId: trigger.triggerId });
       this.#effects.enqueue('notice', `notice:${trigger.triggerId}`, {
@@ -267,6 +279,7 @@ export class AutonomyEngine {
         explicit: true,
         ...(this.#payloadString(input, 'groupId') === null ? {} : { groupId: this.#payloadString(input, 'groupId') as string }),
         ...((input.payload as Record<string, unknown> | undefined)?.kind === 'research' ? { kind: 'research' as const } : {}),
+        ...(this.#payloadString(input, 'experimentId') === null ? {} : { experimentId: this.#payloadString(input, 'experimentId') as string }),
       });
       return { disposition: 'accepted', ticket, reason: null };
     }
@@ -363,6 +376,7 @@ export class AutonomyEngine {
       status: 'open',
       kind: input.kind ?? 'engineering',
       outcomeRef: null,
+      experimentId: input.experimentId ?? null,
       mandateId: mandate.mandateId,
       groupId: input.groupId ?? null,
       priority: input.priority ?? 0,
@@ -531,18 +545,52 @@ export class AutonomyEngine {
    */
   markCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
     const ticket = this.#store.requireTicket(ticketId);
+    const assignment = assignmentId === undefined
+      ? this.#store.activeAssignment(ticketId)
+      : this.#requireAssignment(assignmentId);
+    if (assignment === undefined) {
+      throw new MeshError('TICKET_STATE_INVALID', 'markCompute requires an assignment of this ticket', { ticketId });
+    }
+    if (assignment.ticketId !== ticketId) {
+      throw new MeshError('TICKET_STATE_INVALID', 'assignment belongs to another ticket', {
+        ticketId, assignmentId: assignment.assignmentId,
+      });
+    }
     this.#authorizeTicket('ticket.mark_compute', ticket, {
+      assignment,
       rlp: { formalRunAllowed: this.#rlpFormalRun(ticket.projectId) },
     });
+    const job = this.#store.job(jobId);
+    if (job === undefined) {
+      throw new MeshError('TASK_NOT_FOUND', 'cannot park a ticket on an unknown job', { ticketId, jobId });
+    }
+    if (job.projectId !== ticket.projectId) {
+      throw new MeshError('POLICY_BLOCKED', 'job belongs to another project', {
+        jobId, jobProject: job.projectId, projectId: ticket.projectId,
+      });
+    }
+    if (assignment.taskId !== null && job.taskId !== assignment.taskId) {
+      throw new MeshError('TICKET_STATE_INVALID', 'job does not belong to this assignment', {
+        jobId, assignmentTask: assignment.taskId, jobTask: job.taskId,
+      });
+    }
+    const manifest = JSON.parse(job.manifestJson) as { authorization?: Record<string, unknown> };
+    const experiment = manifest.authorization?.rsi_experiment_id ?? manifest.authorization?.experiment_id;
+    if (typeof experiment !== 'string' || experiment === '') {
+      throw new MeshError('MANDATE_SCOPE_VIOLATION', 'job manifest carries no RLP experiment binding', { jobId });
+    }
+    if (ticket.experimentId !== null && ticket.experimentId !== experiment) {
+      throw new MeshError('MANDATE_SCOPE_VIOLATION', 'job experiment differs from the ticket experiment', {
+        ticketId, ticketExperiment: ticket.experimentId, jobExperiment: experiment,
+      });
+    }
     const now = nowIso();
-    const updated: TicketRecord = { ...ticket, status: 'waiting_compute', waitingReason: `compute job ${jobId}`, updatedAt: now };
+    const updated: TicketRecord = {
+      ...ticket, status: 'waiting_compute', waitingReason: `compute job ${jobId}`,
+      experimentId: experiment, updatedAt: now,
+    };
     this.#store.transaction(() => {
-      if (assignmentId !== undefined) {
-        const assignment = this.#requireAssignment(assignmentId);
-        this.#store.updateAssignment({
-          ...assignment, status: 'ended', endedAt: now, jobId,
-        });
-      }
+      this.#store.updateAssignment({ ...assignment, status: 'ended', endedAt: now, jobId });
       this.#store.updateTicket(updated);
     });
     this.#event('ticket', ticketId, 'waiting-compute', { jobId, assignmentId: assignmentId ?? null });

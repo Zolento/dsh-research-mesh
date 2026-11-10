@@ -141,6 +141,8 @@ export interface TicketRecord {
   readonly endReason: TicketEndReason | null;
   /** Digest of the RLP completion proof, when the ticket ended completed. */
   readonly outcomeRef: string | null;
+  /** RLP experiment this Ticket is bound to, when known. */
+  readonly experimentId: string | null;
 }
 
 /** One execution binding of a Ticket; a Ticket may have several over time. */
@@ -253,4 +255,6 @@ export interface CreateTicketInput {
   readonly explicit: boolean;
   /** Engineering by default; research completion needs an RLP proof. */
   readonly kind?: TicketKind;
+  /** RLP experiment bound at creation; may also be learned from a compute job. */
+  readonly experimentId?: string;
 }

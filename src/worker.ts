@@ -96,6 +96,7 @@ export class MeshWorker {
   readonly #rsi: RsiAdapter;
   readonly #logger: MeshLogger;
   readonly #workerId: string;
+  readonly #onIngested: ((result: IngestionResult) => void) | undefined;
   #timer: NodeJS.Timeout | null = null;
   #busy = false;
   #lastError: string | null = null;
@@ -114,6 +115,8 @@ export class MeshWorker {
     rsi: RsiAdapter;
     logger: MeshLogger;
     workerId: string;
+    /** Called once for every verified artifact ingestion, from any code path. */
+    onIngested?: (result: IngestionResult) => void;
   }) {
     this.#config = options.config;
     this.#store = options.store;
@@ -125,6 +128,7 @@ export class MeshWorker {
     this.#rsi = options.rsi;
     this.#logger = options.logger;
     this.#workerId = options.workerId;
+    this.#onIngested = options.onIngested;
   }
 
   /** Current worker status. */
@@ -183,7 +187,9 @@ export class MeshWorker {
         const after = this.#store.getJob(job.jobId);
         if (after !== undefined && (after.status === 'output_ready' || after.status === 'succeeded')) {
           try {
-            collected.push(await this.#jobs.collect(job.jobId));
+            const result = await this.#jobs.collect(job.jobId);
+            collected.push(result);
+            this.#onIngested?.(result);
           } catch (error) {
             // A partial or failed transfer stays OUTPUT_READY; the experiment is
             // never rerun and the next poll retries only the transfer.

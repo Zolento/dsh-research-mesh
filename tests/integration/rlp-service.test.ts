@@ -89,10 +89,13 @@ test('an explicit trigger creates a ticket that the workbench projects', opts, a
 
 test('formal runs are refused on a legacy-only or ambiguous control root', opts, async () => {
   const legacyProject = makeTempProject();
-  seedRoute(legacyProject.root);
-  const legacyState = join(legacyProject.root, '.research-lifecycle-protocol', 'routes', 'A', 'research-state.json');
-  mkdirSync(join(legacyProject.source, '.research-idea-pipeline', 'routes', 'A'), { recursive: true });
-  writeFileSync(join(legacyProject.source, '.research-idea-pipeline', 'routes', 'A', 'research-state.json'), JSON.stringify({ state_version: 1 }));
+  const legacyDir = join(legacyProject.root, '.research-idea-pipeline', 'routes', 'A');
+  mkdirSync(legacyDir, { recursive: true });
+  const legacyState = join(legacyDir, 'research-state.json');
+  writeFileSync(legacyState, JSON.stringify({
+    schema: 'research-idea-pipeline/research-state@1', state_version: 1, contract: { goal: 'g' },
+    experiments: [], uncertainties: [],
+  }));
   const legacy = await makeService(legacyProject, { config: { rlp: { enabled: true } } });
   try {
     const project = legacy.service.createProject({ name: 'legacy', rsiStateRef: legacyState, repositoryRef: legacyProject.source });
@@ -106,10 +109,8 @@ test('formal runs are refused on a legacy-only or ambiguous control root', opts,
   }
 
   const ambiguousProject = makeTempProject();
-  seedRoute(ambiguousProject.root);
-  const ambiguousState = join(ambiguousProject.root, '.research-lifecycle-protocol', 'routes', 'A', 'research-state.json');
-  seedRoute(ambiguousProject.source);
-  mkdirSync(join(ambiguousProject.source, '.research-idea-pipeline'), { recursive: true });
+  const ambiguousState = seedRoute(ambiguousProject.root);
+  mkdirSync(join(ambiguousProject.root, '.research-idea-pipeline'), { recursive: true });
   const ambiguous = await makeService(ambiguousProject, { config: { rlp: { enabled: true } } });
   try {
     const project = ambiguous.service.createProject({ name: 'both', rsiStateRef: ambiguousState, repositoryRef: ambiguousProject.source });
