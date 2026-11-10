@@ -100,6 +100,12 @@ test('consumed ledger: RSI consumes once, shim blocks, Mesh launches once and in
     assert.equal(final.status, 'ASSURANCE_PENDING', final.errorMessage ?? '');
     const job = service.listJobs()[0];
     assert.equal(job?.status, 'ingested');
+    // The consumed-shim collect path must emit the same Artifact event as polling.
+    const triggers = service.listTriggers('proj-a');
+    assert.ok(
+      triggers.some(trigger => trigger.dedupeKey === `artifact:${job?.jobId}`),
+      'consumed ingestion must emit one Artifact event',
+    );
     const manifest = JSON.parse(readFileSync(join(project.root, '.research-mesh', 'manifests', `${job?.jobId}.json`), 'utf8')) as {
       authorization: { mode: string; verified_by: string };
     };

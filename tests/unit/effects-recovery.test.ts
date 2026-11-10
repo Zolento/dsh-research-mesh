@@ -17,7 +17,8 @@ function makeStore(): { store: AutonomyStore; close(): void; dir: string } {
 
 function expiredClaim(store: AutonomyStore, effectId: string): void {
   const past = new Date(Date.now() - 60_000).toISOString();
-  assert.equal(store.claimEffect(effectId, 'dead-owner', 1_000, past), true);
+  const token = store.claimEffect(effectId, 'dead-owner', 1_000, past);
+  assert.ok(token, 'a claim token is required');
 }
 
 test('an expired claim before the handler runs is replayed exactly once', async () => {
@@ -125,5 +126,31 @@ test('a second restart after an expired claim does not duplicate the effect', as
     third.register('safe-work', { retry: 'safe', run: async () => { runs += 1; return 'done'; } });
     await third.tick();
     assert.equal(runs, 1);
+  } finally { close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('a renewed lease cannot be recovered by a stale scanner', () => {
+  const { store, close, dir } = makeStore();
+  try {
+    const setup = new EffectsRunner(store);
+    setup.register('safe-work', { retry: 'safe', run: async () => 'done' });
+    setup.enqueue('safe-work', 'k1', {});
+    const row = setup.list()[0];
+    assert.ok(row);
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const token = store.claimEffect(row.effectId, 'owner', 1_000, past);
+    assert.ok(token);
+    // The live worker renews before the scanner runs.
+    assert.equal(store.renewClaim(row.effectId, token, 60_000), true);
+    assert.equal(store.recoverClaim(row.effectId, token, 'pending', {
+      error: 'should not win', nextRunAt: new Date().toISOString(),
+    }), false);
+    // A stale token can never take the claim either.
+    assert.equal(store.recoverClaim(row.effectId, 'wrong-token', 'pending', {
+      error: 'wrong token', nextRunAt: new Date().toISOString(),
+    }), false);
+    assert.equal(store.finishEffect(row.effectId, 'succeeded', { claimToken: 'wrong-token' }), false);
+    assert.equal(store.finishEffect(row.effectId, 'succeeded', { claimToken: token }), true);
   } finally { close(); rmSync(dir, { recursive: true, force: true }); }
 });

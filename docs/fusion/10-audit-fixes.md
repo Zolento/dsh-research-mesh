@@ -102,11 +102,26 @@ Real-RLP tests (no mocked decision) use RLP's own `apply` + `assurance-store` in
 `tests/fixtures/rlp_completion_fixture.py` and cover PASS, NEEDS_REVIEW, FAIL,
 stale assurance, and an unbound XID.
 
+## 5.2 Third review round (2026-11-10)
+
+| Finding | Fix | Test |
+|---|---|---|
+| Consumed-shim ingestion bypassed the Artifact event | ingestion now emits from **one** source, `RemoteJobExecutor.collect()`, via an `onIngested` callback; the worker and service wrappers no longer emit separately, so poll, consumed-shim and manual collect share the same event | consumed-loop e2e asserts `artifact:<jobId>` after a real consumed run |
+| Recovery CAS could steal a renewed claim; one owner covered several claims | every claim gets a fresh `claim_token`; `recoverClaim`, `renewClaim` and `finishEffect` all compare the token, and recovery also requires the lease to still be expired | `tests/unit/effects-recovery.test.ts` renewed-lease and wrong-token cases |
+| `markCompute` accepted a job from another group | the job's `teamId` must equal the assignment's `teamId` (project and task checks already existed) | code path + review |
+| Wake trusted the event type, not the job | wake requires the authoritative job record, same project/team as the assignment, and a terminal status (`ingested` for completion, `failed`/`cancelled` for failure) | autonomy fake-completion test |
+| Web API lacked the completion action | `/tickets/state` accepts `action: "complete"` with `experimentId` and optional `assurancePath`, calling `completeResearchTicket` | real-RLP HTTP completion test |
+
+`#formalRunLayoutOk()` remains a synchronous approximation (new-root `routes/`
+tree); the async RLP resolver stays the authority for reporting and the worker
+still requires the RLP receipt. This is recorded as a known limitation, not a
+scientific gate.
+
 ## 6. Test evidence
 
 ```
 npm run typecheck     PASS
-npm run test:all      153 tests, 153 pass, 0 fail
+npm run test:all      156 tests, 156 pass, 0 fail
 node scripts/check-dsh.mjs
   installed 0.2.2-rc.1; engines.dsh >=0.2.1-rc.2 <0.3.0-0; PASS
   @deepseek-ai/schemastery 3.19.0; PASS
@@ -114,10 +129,10 @@ node scripts/ui-acceptance.mjs   PASS (isolated profile, 3 groups, model
   settings, dark mode, 1440/1280/768/390 no overflow)
 ```
 
-New suites: `rlp-completion` (5, real RLP apply/assurance/decision),
-`completion` (6), `boundaries` (5), `effects-recovery` (5), `policy` (4),
-`migrations` (1), plus new autonomy cases for subscriptions, wake and job
-ownership. The identity suite was removed with P0-01.
+New suites: `rlp-completion` (6, real RLP apply/assurance/decision + HTTP
+completion), `completion` (6), `boundaries` (5), `effects-recovery` (6),
+`policy` (4), `migrations` (1), plus autonomy cases for subscriptions, wake,
+job ownership and fake completion. The identity suite was removed with P0-01.
 
 ## 7. Not verified
 

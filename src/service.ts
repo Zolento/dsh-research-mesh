@@ -252,6 +252,7 @@ export class MeshService {
         manifestsRoot: layout.manifests,
         outcomesRoot: layout.outcomes,
         logger: this.#logger,
+        onIngested: result => this.#recordArtifactIngested(result),
       });
       const jobs = new ExperimentJobService(this.#config, store, scheduler, workspaces, executor, layout.manifests, this.#logger);
       const workerId = newWorkerId();
@@ -266,7 +267,6 @@ export class MeshService {
         rsi,
         logger: this.#logger,
         workerId,
-        onIngested: result => this.#recordArtifactIngested(result),
       });
       this.#layout = layout;
       this.#teamStore = teamStore;
@@ -1526,10 +1526,10 @@ export class MeshService {
     return task;
   }
 
-  async collectJob(jobId: string): Promise<IngestionResult> {
-    const result = await this.#requireJobs().collect(jobId);
-    this.#recordArtifactIngested(result);
-    return result;
+  collectJob(jobId: string): Promise<IngestionResult> {
+    // The job executor emits the Artifact event from collect(), so every
+    // ingestion path (poll, consumed shim, manual collect) shares one source.
+    return this.#requireJobs().collect(jobId);
   }
 
   async #recordArtifactIfIngested(jobId: string): Promise<void> {

@@ -2,11 +2,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeService, makeTempProject } from '../helpers/env.ts';
 import { buildCompletionFixture } from '../helpers/rlp-completion.ts';
 import type { MeshError } from '../../src/errors.ts';
+import { createMeshApiHandler } from '../../src/host/web-api.ts';
 
 const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH
   ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
@@ -87,4 +89,32 @@ test('an unbound experiment id is refused before touching RLP', opts, async () =
       (error: MeshError) => error.code === 'MANDATE_SCOPE_VIOLATION',
     );
   } finally { await cleanup(); }
+});
+
+
+test('the Web API exposes the RLP-reviewed completion action', opts, async () => {
+  const { service, ticketId, fixture, cleanup } = await serviceFor('pass');
+  const server = createServer((req, res) => { void createMeshApiHandler(service)(req, res); });
+  try {
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('no port');
+    const base = `http://127.0.0.1:${address.port}/dsh-research-mesh/api`;
+    const response = await fetch(`${base}/tickets/state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ticketId, action: 'complete', experimentId: 'X1',
+        ...(fixture.assurance === null ? {} : { assurancePath: fixture.assurance }),
+      }),
+    });
+    const payload = await response.json() as { ok: boolean; value?: { status: string }; error?: { code: string } };
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.value?.status, 'ended');
+    assert.equal(service.getTicket(ticketId).endReason, 'completed');
+  } finally {
+    server.close();
+    await cleanup();
+  }
 });

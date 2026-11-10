@@ -186,6 +186,8 @@ export interface EffectRecord {
   readonly lastError: string | null;
   /** Worker that currently owns the claim, when running. */
   readonly owner: string | null;
+  /** Per-claim fencing token; every claim gets a fresh value. */
+  readonly claimToken: string | null;
   readonly claimedAt: string | null;
   readonly leaseExpiresAt: string | null;
   readonly createdAt: string;

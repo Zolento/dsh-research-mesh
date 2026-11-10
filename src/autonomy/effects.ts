@@ -114,13 +114,13 @@ export class EffectsRunner {
     for (const row of this.#store.staleClaims(now)) {
       const handler = this.#handlers.get(row.kind);
       if (handler === undefined || handler.retry === 'safe') {
-        if (this.#store.recoverClaim(row.effectId, 'pending', {
+        if (this.#store.recoverClaim(row.effectId, row.claimToken ?? '', 'pending', {
           error: 'claim lease expired; replaying a safe effect',
           nextRunAt: now,
           at: now,
         })) replayed += 1;
       } else {
-        if (this.#store.recoverClaim(row.effectId, 'failed', {
+        if (this.#store.recoverClaim(row.effectId, row.claimToken ?? '', 'failed', {
           error: 'RECONCILE_REQUIRED: owner died while an external effect was in flight',
           at: now,
         })) parked += 1;
@@ -168,6 +168,7 @@ export class EffectsRunner {
       nextRunAt: at,
       lastError: null,
       owner: null,
+      claimToken: null,
       claimedAt: null,
       leaseExpiresAt: null,
       createdAt: at,
@@ -194,7 +195,8 @@ export class EffectsRunner {
     let failed = 0;
     let dead = 0;
     for (const row of due) {
-      if (!this.#store.claimEffect(row.effectId, this.#owner, this.#leaseMs, nowIso())) continue;
+      const claimToken = this.#store.claimEffect(row.effectId, this.#owner, this.#leaseMs, nowIso());
+      if (claimToken === null) continue;
       const handler = this.#handlers.get(row.kind);
       if (handler === undefined) {
         this.#store.finishEffect(row.effectId, 'dead', { error: `no handler for ${row.kind}` });
@@ -213,7 +215,7 @@ export class EffectsRunner {
       // Keep the claim alive while a slow handler runs; if renewal fails the
       // claim was recovered by another worker and this task must not write back.
       const renewal = setInterval(() => {
-        this.#store.renewClaim(row.effectId, this.#owner, this.#leaseMs);
+        this.#store.renewClaim(row.effectId, claimToken, this.#leaseMs);
       }, Math.max(1_000, Math.floor(this.#leaseMs / 2)));
       renewal.unref?.();
       try {
@@ -222,31 +224,31 @@ export class EffectsRunner {
           this.#store.finishEffect(row.effectId, 'pending', {
             nextRunAt: isoFromMs(this.#now() + this.#baseDelayMs),
             attempts: row.attempts,
-            owner: this.#owner,
+            claimToken,
           });
           deferred += 1;
           continue;
         }
-        this.#store.finishEffect(row.effectId, 'succeeded', { attempts: row.attempts + 1, owner: this.#owner });
+        this.#store.finishEffect(row.effectId, 'succeeded', { attempts: row.attempts + 1, claimToken });
         done += 1;
       } catch (error) {
         const attempts = row.attempts + 1;
         const message = errorText(error);
         if (handler.retry === 'reconcile-only') {
           this.#store.finishEffect(row.effectId, 'failed', {
-            attempts, error: `${message}; reconcile before retry`, owner: this.#owner,
+            attempts, error: `${message}; reconcile before retry`, claimToken,
           });
           failed += 1;
           continue;
         }
         if (attempts >= row.maxAttempts) {
-          this.#store.finishEffect(row.effectId, 'dead', { attempts, error: message, owner: this.#owner });
+          this.#store.finishEffect(row.effectId, 'dead', { attempts, error: message, claimToken });
           dead += 1;
           continue;
         }
         const delay = Math.min(this.#baseDelayMs * 2 ** (attempts - 1), this.#maxDelayMs);
         this.#store.finishEffect(row.effectId, 'pending', {
-          attempts, error: message, nextRunAt: isoFromMs(this.#now() + delay), owner: this.#owner,
+          attempts, error: message, nextRunAt: isoFromMs(this.#now() + delay), claimToken,
         });
         failed += 1;
       } finally {

@@ -394,6 +394,13 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           send(res, 200, { ok: true, value: service.waitTicketForHuman(ticketId, stringField(body, 'reason')) });
           return;
         }
+        if (action === 'complete') {
+          const experimentId = stringField(body, 'experimentId');
+          const assurancePath = typeof body.assurancePath === 'string' && body.assurancePath !== ''
+            ? body.assurancePath : undefined;
+          send(res, 200, { ok: true, value: await service.completeResearchTicket(ticketId, experimentId, assurancePath) });
+          return;
+        }
         if (action === 'end') {
           const reason = stringField(body, 'reason');
           if (reason !== 'completed' && reason !== 'failed' && reason !== 'cancelled') {
@@ -402,7 +409,7 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
           send(res, 200, { ok: true, value: service.endTicket(ticketId, reason) });
           return;
         }
-        throw new MeshError('INVALID_ARGUMENT', 'ticket action must be stop, resume, assign, start, finish, wait or end');
+        throw new MeshError('INVALID_ARGUMENT', 'ticket action must be stop, resume, assign, start, finish, wait, complete or end');
       }
       if (path === '/autonomy/mode' && method === 'POST') {
         const body = await readJson(req);

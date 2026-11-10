@@ -35,6 +35,7 @@ function makeStack(policy: Partial<AutonomyPolicy> = {}): Stack {
     projectStatus: () => 'active',
     rlpFormalRun: () => true,
     groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
+    jobFacts: () => ({ status: 'ingested', projectId: 'proj-1', teamId: 'team-a' }),
   });
   return {
     engine,
@@ -358,6 +359,33 @@ test('only a terminal job event for its own job wakes a waiting_compute ticket',
       ticketId: ticket.ticketId, payload: { jobId: 'job-1' },
     });
     assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'open');
+  } finally { stack.cleanup(); }
+});
+
+test('a declared completion whose job is not terminal does not wake the ticket', () => {
+  const stack = makeStack();
+  try {
+    const ticket = stack.engine.receiveTrigger(explicitInput('evt-fake')).ticket;
+    assert.ok(ticket);
+    const assignment = stack.engine.assign(ticket.ticketId, 'team-a', { taskId: 'task-1' });
+    stack.store.updateAssignment({ ...assignment, status: 'ended', jobId: 'job-2' });
+    stack.store.updateTicket({
+      ...stack.engine.getTicket(ticket.ticketId), status: 'waiting_compute', waitingReason: 'compute job job-2',
+    });
+    const running = new AutonomyEngine({
+      store: stack.store,
+      effects: new EffectsRunner(stack.store),
+      meshStore: stack.meshStore,
+      projectStatus: () => 'active',
+      rlpFormalRun: () => true,
+      groupFacts: teamId => ({ teamId, projectId: 'proj-1', routeId: 'A', status: 'active' }),
+      jobFacts: () => ({ status: 'running', projectId: 'proj-1', teamId: 'team-a' }),
+    });
+    running.receiveTrigger({
+      source: 'compute_job', eventId: 'job-2-done', projectId: 'proj-1', kind: 'compute_job_completed',
+      ticketId: ticket.ticketId, payload: { jobId: 'job-2' },
+    });
+    assert.equal(stack.engine.getTicket(ticket.ticketId).status, 'waiting_compute');
   } finally { stack.cleanup(); }
 });
 

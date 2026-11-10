@@ -76,6 +76,8 @@ export interface AutonomyEngineOptions {
   readonly rlpFormalRun?: (projectId: string) => boolean;
   /** Group lookup; the service supplies the real Mesh registry. */
   readonly groupFacts?: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
+  /** Job lookup; the service supplies the authoritative Mesh job registry. */
+  readonly jobFacts?: (jobId: string) => { status: string; projectId: string; teamId: string } | undefined;
 }
 
 /** Operations an explicit Mandate may carry. */
@@ -99,6 +101,7 @@ export class AutonomyEngine {
   readonly #projectStatus: (projectId: string) => 'active' | 'paused' | 'archived' | 'registered';
   readonly #rlpFormalRun: (projectId: string) => boolean;
   readonly #groupFacts: (teamId: string) => { teamId: string; projectId: string; routeId: string; status: import('../storage/types.ts').MeshGroupStatus } | undefined;
+  readonly #jobFacts: (jobId: string) => { status: string; projectId: string; teamId: string } | undefined;
   #policy: AutonomyPolicy;
 
   /**
@@ -112,6 +115,7 @@ export class AutonomyEngine {
     this.#projectStatus = options.projectStatus ?? (() => 'active');
     this.#rlpFormalRun = options.rlpFormalRun ?? (() => false);
     this.#groupFacts = options.groupFacts ?? ((teamId) => options.store.groupFacts(teamId));
+    this.#jobFacts = options.jobFacts ?? ((jobId) => options.store.job(jobId));
     const persisted = options.store.loadPolicy();
     if (persisted !== undefined) {
       const parsed = JSON.parse(persisted.json) as AutonomyPolicy;
@@ -251,9 +255,14 @@ export class AutonomyEngine {
       // Only a terminal compute/artifact event for the ticket's own job may move
       // it out of waiting_compute; ordinary context never releases the wait.
       const jobId = (input.payload as Record<string, unknown> | undefined)?.jobId;
-      const linked = typeof jobId === 'string'
-        && this.#store.listAssignments(ticket.ticketId).some(assignment => assignment.jobId === jobId);
-      if (ticket.status === 'waiting_compute' && linked) {
+      const job = typeof jobId === 'string' ? this.#jobFacts(jobId) : undefined;
+      const linked = typeof jobId === 'string' && job !== undefined && job.projectId === ticket.projectId
+        && this.#store.listAssignments(ticket.ticketId)
+          .some(assignment => assignment.jobId === jobId && assignment.teamId === job.teamId);
+      const terminal = trigger.kind === 'compute_job_failed'
+        ? job?.status === 'failed' || job?.status === 'cancelled'
+        : job?.status === 'ingested';
+      if (ticket.status === 'waiting_compute' && linked && terminal) {
         if (trigger.kind === 'compute_job_failed') {
           this.#store.updateTicket({
             ...ticket, status: 'waiting_human', waitingReason: `compute job ${jobId} failed`, updatedAt: nowIso(),
@@ -567,6 +576,11 @@ export class AutonomyEngine {
     if (job.projectId !== ticket.projectId) {
       throw new MeshError('POLICY_BLOCKED', 'job belongs to another project', {
         jobId, jobProject: job.projectId, projectId: ticket.projectId,
+      });
+    }
+    if (job.teamId !== assignment.teamId) {
+      throw new MeshError('POLICY_BLOCKED', 'job belongs to another group', {
+        jobId, jobTeam: job.teamId, assignmentTeam: assignment.teamId,
       });
     }
     if (assignment.taskId !== null && job.taskId !== assignment.taskId) {

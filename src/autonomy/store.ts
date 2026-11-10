@@ -7,6 +7,7 @@
  * their existing owners.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { MeshError } from '../errors.ts';
 import type { SqliteTeamStore } from '../bridge/runtime/persistence.ts';
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS mesh_effects (
   next_run_at TEXT NOT NULL,
   last_error TEXT,
   owner TEXT,
+  claim_token TEXT,
   claimed_at TEXT,
   lease_expires_at TEXT,
   created_at TEXT NOT NULL,
@@ -268,6 +270,7 @@ function effectFrom(row: Row): EffectRecord {
     nextRunAt: str(row, 'next_run_at'),
     lastError: nullableStr(row, 'last_error'),
     owner: nullableStr(row, 'owner'),
+    claimToken: nullableStr(row, 'claim_token'),
     claimedAt: nullableStr(row, 'claimed_at'),
     leaseExpiresAt: nullableStr(row, 'lease_expires_at'),
     createdAt: str(row, 'created_at'),
@@ -308,6 +311,9 @@ export class AutonomyStore {
       db.exec('ALTER TABLE mesh_effects ADD COLUMN claimed_at TEXT');
       db.exec('ALTER TABLE mesh_effects ADD COLUMN lease_expires_at TEXT');
     }
+    if (!columns('mesh_effects').includes('claim_token')) {
+      db.exec('ALTER TABLE mesh_effects ADD COLUMN claim_token TEXT');
+    }
     if (!columns('mesh_mandates').includes('policy_digest')) {
       db.exec("ALTER TABLE mesh_mandates ADD COLUMN policy_digest TEXT NOT NULL DEFAULT ''");
     }
@@ -326,7 +332,7 @@ export class AutonomyStore {
     for (const column of ['kind', 'outcome_ref', 'experiment_id']) {
       try { db.exec(`ALTER TABLE mesh_tickets DROP COLUMN ${column}`); } catch { /* older sqlite */ }
     }
-    for (const column of ['owner', 'claimed_at', 'lease_expires_at']) {
+    for (const column of ['owner', 'claim_token', 'claimed_at', 'lease_expires_at']) {
       try { db.exec(`ALTER TABLE mesh_effects DROP COLUMN ${column}`); } catch { /* older sqlite */ }
     }
     db.exec("INSERT INTO mesh_meta(key, value) VALUES ('autonomy_schema_version', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
@@ -593,13 +599,14 @@ export class AutonomyStore {
    * @param at - claim timestamp.
    * @returns true when this caller won the claim.
    */
-  claimEffect(effectId: string, owner: string, leaseMs: number, at = nowIso()): boolean {
+  claimEffect(effectId: string, owner: string, leaseMs: number, at = nowIso()): string | null {
     const lease = new Date(Date.parse(at) + leaseMs).toISOString();
+    const token = randomUUID();
     return this.transaction(db => {
       const result = db.prepare(`UPDATE mesh_effects
-        SET status = 'running', owner = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ?
-        WHERE effect_id = ? AND status = 'pending'`).run(owner, at, lease, at, effectId);
-      return Number(result.changes) === 1;
+        SET status = 'running', owner = ?, claim_token = ?, claimed_at = ?, lease_expires_at = ?, updated_at = ?
+        WHERE effect_id = ? AND status = 'pending'`).run(owner, token, at, lease, at, effectId);
+      return Number(result.changes) === 1 ? token : null;
     });
   }
 
@@ -617,13 +624,20 @@ export class AutonomyStore {
    * @param next - `pending` (replay) or `failed` (reconcile required).
    * @param options - error text and next run time.
    */
-  recoverClaim(effectId: string, next: 'pending' | 'failed', options: { error: string; nextRunAt?: string; at?: string }): boolean {
+  recoverClaim(
+    effectId: string,
+    claimToken: string,
+    next: 'pending' | 'failed',
+    options: { error: string; nextRunAt?: string; at?: string },
+  ): boolean {
     const at = options.at ?? nowIso();
     return this.transaction(db => {
       const result = db.prepare(`UPDATE mesh_effects
-        SET status = ?, owner = NULL, claimed_at = NULL, lease_expires_at = NULL,
+        SET status = ?, owner = NULL, claim_token = NULL, claimed_at = NULL, lease_expires_at = NULL,
             attempts = attempts + 1, last_error = ?, next_run_at = COALESCE(?, next_run_at), updated_at = ?
-        WHERE effect_id = ? AND status = 'running'`).run(next, options.error, options.nextRunAt ?? null, at, effectId);
+        WHERE effect_id = ? AND claim_token = ? AND status = 'running' AND lease_expires_at <= ?`).run(
+        next, options.error, options.nextRunAt ?? null, at, effectId, claimToken, at,
+      );
       return Number(result.changes) === 1;
     });
   }
@@ -666,12 +680,12 @@ export class AutonomyStore {
   }
 
   /** One Mesh job row, read from the shared database. */
-  job(jobId: string): { jobId: string; taskId: string; projectId: string; teamId: string; manifestJson: string } | undefined {
+  job(jobId: string): { jobId: string; taskId: string; projectId: string; teamId: string; status: string; manifestJson: string } | undefined {
     const row = this.read(db => db.prepare('SELECT * FROM mesh_jobs WHERE job_id = ?').get(jobId) as Row | undefined);
     if (row === undefined) return undefined;
     return {
       jobId: String(row.job_id), taskId: String(row.task_id), projectId: String(row.project_id),
-      teamId: String(row.team_id), manifestJson: String(row.manifest_json),
+      teamId: String(row.team_id), status: String(row.status), manifestJson: String(row.manifest_json),
     };
   }
 
@@ -692,33 +706,33 @@ export class AutonomyStore {
     nextRunAt?: string;
     attempts?: number;
     at?: string;
-    owner?: string;
+    claimToken?: string;
   } = {}): boolean {
     const at = options.at ?? nowIso();
     return this.transaction(db => {
-      const result = options.owner === undefined
+      const result = options.claimToken === undefined
         ? db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
-            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
-            lease_expires_at = NULL, updated_at = ? WHERE effect_id = ?`).run(
+            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claim_token = NULL,
+            claimed_at = NULL, lease_expires_at = NULL, updated_at = ? WHERE effect_id = ?`).run(
             status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
           )
         : db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
-            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claimed_at = NULL,
-            lease_expires_at = NULL, updated_at = ?
-            WHERE effect_id = ? AND owner = ? AND status = 'running'`).run(
+            next_run_at = COALESCE(?, next_run_at), last_error = ?, owner = NULL, claim_token = NULL,
+            claimed_at = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE effect_id = ? AND claim_token = ? AND status = 'running'`).run(
             status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
-            options.owner,
+            options.claimToken,
           );
       return Number(result.changes) === 1;
     });
   }
 
   /** Extend a live claim; false when ownership was lost to recovery. */
-  renewClaim(effectId: string, owner: string, leaseMs: number, at = nowIso()): boolean {
+  renewClaim(effectId: string, claimToken: string, leaseMs: number, at = nowIso()): boolean {
     const lease = new Date(Date.parse(at) + leaseMs).toISOString();
     return this.transaction(db => {
       const result = db.prepare(`UPDATE mesh_effects SET lease_expires_at = ?, updated_at = ?
-        WHERE effect_id = ? AND owner = ? AND status = 'running'`).run(lease, at, effectId, owner);
+        WHERE effect_id = ? AND claim_token = ? AND status = 'running'`).run(lease, at, effectId, claimToken);
       return Number(result.changes) === 1;
     });
   }

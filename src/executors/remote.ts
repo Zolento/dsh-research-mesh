@@ -33,6 +33,8 @@ export interface RemoteExecutorOptions {
   readonly manifestsRoot: string;
   readonly outcomesRoot: string;
   readonly logger: MeshLogger;
+  /** Called after a verified ingestion, the single Artifact event source. */
+  readonly onIngested?: (result: IngestionResult) => void;
 }
 
 /** Result of a submit attempt. */
@@ -63,6 +65,7 @@ export class RemoteJobExecutor {
   readonly #manifestsRoot: string;
   readonly #outcomesRoot: string;
   readonly #logger: MeshLogger;
+  readonly #onIngested: ((result: IngestionResult) => void) | undefined;
   readonly #inFlight = new Map<string, Promise<SubmitResult>>();
 
   /**
@@ -78,6 +81,7 @@ export class RemoteJobExecutor {
     this.#manifestsRoot = options.manifestsRoot;
     this.#outcomesRoot = options.outcomesRoot;
     this.#logger = options.logger;
+    this.#onIngested = options.onIngested;
   }
 
   /** Transport label. */
@@ -399,13 +403,15 @@ export class RemoteJobExecutor {
         sha256: artifact.sha256,
         sizeBytes: artifact.sizeBytes,
       }));
-      return {
+      const existing = {
         jobId,
         task,
         artifacts,
         artifactManifestDigest: this.#store.getOutcome(jobId)?.artifactManifestDigest ?? '',
         outcomePath: existsSync(join(this.#outcomesRoot, `${jobId}.json`)) ? join(this.#outcomesRoot, `${jobId}.json`) : null,
       };
+      this.#onIngested?.(existing);
+      return existing;
     }
     if (job.status !== 'output_ready' && job.status !== 'succeeded') {
       throw new MeshError('TASK_STATE_INVALID', `job ${jobId} is ${job.status}; artifacts are not ready`, {
@@ -535,7 +541,9 @@ export class RemoteJobExecutor {
     }
     this.#store.appendEvent('job', jobId, 'ingested', { artifacts: artifacts.length, manifestDigest });
     this.#logger.info('job artifacts ingested', { jobId, artifacts: artifacts.length });
-    return { jobId, task, artifacts, artifactManifestDigest: manifestDigest, outcomePath };
+    const result = { jobId, task, artifacts, artifactManifestDigest: manifestDigest, outcomePath };
+    this.#onIngested?.(result);
+    return result;
   }
 
   /**
