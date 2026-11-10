@@ -167,9 +167,48 @@ export interface ResearchPipelinePort {
  */
 export const CANONICAL_STATE_FILE = 'research-state.json'
 
-/** Where a route keeps its machine state (`references/project-layout.md` §6). */
+/** New runtime control root (RLP v2.1.0+). */
+export const RLP_RUNTIME_ROOT = '.research-lifecycle-protocol'
+/** Legacy runtime root; read-only for audit and migration. */
+export const RLP_LEGACY_ROOT = '.research-idea-pipeline'
+
+/** Which control roots exist for one project. */
+export interface StorageLayout {
+  readonly kind: 'new' | 'legacy' | 'ambiguous' | 'none'
+  readonly newRoot: string
+  readonly legacyRoot: string
+}
+
+/**
+ * Detect the control-root layout without writing anything.
+ * Both roots present is ambiguous by RLP contract; callers must fail closed.
+ * @param projectRoot - absolute project root.
+ * @returns layout and both candidate roots.
+ */
+export function detectStorageLayout(projectRoot: string): StorageLayout {
+  const newRoot = join(projectRoot, RLP_RUNTIME_ROOT)
+  const legacyRoot = join(projectRoot, RLP_LEGACY_ROOT)
+  const hasNew = existsSync(newRoot)
+  const hasLegacy = existsSync(legacyRoot)
+  return {
+    kind: hasNew && hasLegacy ? 'ambiguous' : hasNew ? 'new' : hasLegacy ? 'legacy' : 'none',
+    newRoot,
+    legacyRoot,
+  }
+}
+
+/**
+ * Where a route keeps its machine state.
+ *
+ * The RLP runtime root wins whenever it exists; the legacy root is used only
+ * when it is the sole control root. An ambiguous layout is refused by the RLP
+ * storage resolver before any formal run, so this read helper never picks one
+ * silently on its own.
+ */
 export function canonicalStatePath(projectRoot: string, route: string): string {
-  return join(projectRoot, '.research-idea-pipeline', 'routes', route, CANONICAL_STATE_FILE)
+  const layout = detectStorageLayout(projectRoot)
+  const root = layout.kind === 'legacy' ? layout.legacyRoot : layout.newRoot
+  return join(root, 'routes', route, CANONICAL_STATE_FILE)
 }
 
 export interface CanonicalStateFile {

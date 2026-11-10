@@ -13,12 +13,12 @@ test('native delegation is denied for a full group, a member, and a global cap',
   });
   try {
     for (const route of ['A', 'B']) {
-      mkdirSync(join(project.root, '.research-idea-pipeline', 'routes', route), { recursive: true });
+      mkdirSync(join(project.root, '.research-lifecycle-protocol', 'routes', route), { recursive: true });
     }
-    const state = join(project.root, '.research-idea-pipeline', 'routes', 'A', 'research-state.json');
-    mkdirSync(join(project.root, '.research-idea-pipeline', 'routes', 'A'), { recursive: true });
+    const state = join(project.root, '.research-lifecycle-protocol', 'routes', 'A', 'research-state.json');
+    mkdirSync(join(project.root, '.research-lifecycle-protocol', 'routes', 'A'), { recursive: true });
     const { copyFileSync } = await import('node:fs');
-    copyFileSync('/home/lenovo/.agents/skills/rsi-pipeline/templates/research-state.template.json', state);
+    copyFileSync('/home/lenovo/.agents/skills/research-lifecycle-protocol/templates/research-state.template.json', state);
     copyFileSync(state, state.replace('/A/', '/B/'));
     const created = service.createProject({ name: 'guard', rsiStateRef: state, repositoryRef: project.source });
 

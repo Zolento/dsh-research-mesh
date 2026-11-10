@@ -1,3 +1,5 @@
+> Historical requirement baseline (v0.1.0, RSI era). Where it conflicts with RLP v2.2.0, the RLP skill and `docs/fusion/` are authoritative; Mesh engineering behaviour follows the current source and tests.
+
 # DSH Research Mesh — 权威需求文档（v0.1.0）
 
 > 本文件是当前开发的**需求权威来源**，用于在上下文压缩、会话恢复或换人接手时完整恢复任务。

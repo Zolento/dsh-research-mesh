@@ -8,6 +8,13 @@
  */
 
 import { MeshError } from './errors.ts';
+import { RlpRuntime } from './rlp/index.ts';
+import type { RlpContextPlan, RlpContextPacket, RlpStorageResolution, RlpSubagentContract } from './rlp/types.ts';
+import type { RlpSubagentRole } from './rlp/subagent-context.ts';
+import { AutonomyStore } from './autonomy/store.ts';
+import { EffectsRunner, type EffectsTickReport } from './autonomy/effects.ts';
+import { AutonomyEngine, DEFAULT_AUTONOMY_POLICY } from './autonomy/engine.ts';
+import type { AssignmentRecord, AutonomyPolicy, CreateTicketInput, ReceiveResult, TicketRecord, TriggerInput, TriggerRecord } from './autonomy/types.ts';
 import type { MeshConfig } from './config/types.ts';
 import { ensureProjectLayout, type ProjectLayout } from './project.ts';
 import { MeshStore } from './storage/mesh-store.ts';
@@ -45,7 +52,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
 import { newWorkerId } from './util/ids.ts';
-import { canonicalStatePath, readCanonicalStateFile } from './bridge/adapters/research-pipeline.ts';
+import { canonicalStatePath, detectStorageLayout, readCanonicalStateFile } from './bridge/adapters/research-pipeline.ts';
 
 /** Host services the plugin optionally binds to. */
 export interface MeshHostServices {
@@ -80,6 +87,10 @@ export interface MeshServiceStatus {
   readonly tasks: number;
   readonly jobs: number;
   readonly rsiAvailable: boolean;
+  /** RLP v2.2.0 installation discovered and usable. */
+  readonly rlpAvailable: boolean;
+  readonly rlpVersion: string | null;
+  readonly autonomyMode: AutonomyPolicy['mode'];
   readonly transport: string;
 }
 
@@ -123,6 +134,10 @@ export class MeshService {
   #jobs: ExperimentJobService | null = null;
   #worker: MeshWorker | null = null;
   #models: ModelResolver | null = null;
+  #rlp: RlpRuntime | null = null;
+  #autoStore: AutonomyStore | null = null;
+  #effects: EffectsRunner | null = null;
+  #autonomy: AutonomyEngine | null = null;
   #agents: DshHostContext['agents'];
   #llm: DshLlmLike | undefined;
   #sessionController: DshHostContext['sessionController'];
@@ -164,6 +179,21 @@ export class MeshService {
     try {
       teamStore = openTeamStore({ path: this.#config.databasePath });
       const store = new MeshStore(teamStore);
+      const rlp = this.#createRlp();
+      const autoStore = new AutonomyStore(teamStore);
+      const effects = new EffectsRunner(autoStore);
+      const autonomy = new AutonomyEngine({
+        store: autoStore,
+        effects,
+        meshStore: store,
+        policy: this.#initialPolicy(),
+        handlers: {
+          notice: payload => { store.appendEvent('trigger', String(payload.triggerId ?? 'unknown'), 'autonomy-notice', payload); },
+          dispatch: payload => { store.appendEvent('ticket', String(payload.ticketId ?? 'unknown'), 'dispatch-requested', payload); },
+          launch: payload => { store.appendEvent('ticket', String(payload.ticketId ?? 'unknown'), 'launch-requested', payload); },
+          notify: payload => { store.appendEvent('ticket', String(payload.ticketId ?? 'unknown'), 'notify', payload); },
+        },
+      });
       const workspaces = new WorkspaceManager(this.#config, store, this.#logger);
       const sessionHost = this.#sessionHostOverride ?? this.#createSessionHost();
       const catalog = this.#catalogOverride ?? this.#createCatalog();
@@ -205,6 +235,10 @@ export class MeshService {
       this.#layout = layout;
       this.#teamStore = teamStore;
       this.#store = store;
+      this.#rlp = rlp;
+      this.#autoStore = autoStore;
+      this.#effects = effects;
+      this.#autonomy = autonomy;
       this.#workspaces = workspaces;
       this.#projects = projects;
       this.#teams = teams;
@@ -219,6 +253,9 @@ export class MeshService {
       this.#transportKind = transport.kind;
       this.#initialized = true;
       if (this.#config.startupRecovery) await this.#startupRecovery();
+      try { await effects.tick(); } catch (error) {
+        this.#logger.warn('autonomy effects tick failed during startup', { error: String(error) });
+      }
       if (this.#config.autoStartScheduler) worker.start();
       this.#logger.info('research mesh initialized', {
         projectRoot: this.#config.projectRoot,
@@ -251,6 +288,10 @@ export class MeshService {
     }
     this.#teamStore = null;
     this.#store = null;
+    this.#rlp = null;
+    this.#autoStore = null;
+    this.#effects = null;
+    this.#autonomy = null;
     this.#worker = null;
     this.#jobs = null;
     this.#gpu = null;
@@ -325,11 +366,237 @@ export class MeshService {
       tasks: tasks.length,
       jobs: this.#jobs?.list().length ?? 0,
       rsiAvailable: this.#rsi?.discover().available ?? false,
+      rlpAvailable: this.#rlp?.available ?? false,
+      rlpVersion: this.#rlp?.skill?.version ?? null,
+      autonomyMode: this.#autonomy?.policy.mode ?? 'off',
       transport: this.#transportKind,
     };
   }
 
+
+  // -- RLP and autonomy -----------------------------------------------------
+
+  #createRlp(): RlpRuntime {
+    if (!this.#config.rlp.enabled) return RlpRuntime.unavailable('rlp.enabled is false');
+    return RlpRuntime.create({
+      ...(this.#config.rlp.skillPath === undefined ? {} : { skillPath: this.#config.rlp.skillPath }),
+      python: this.#config.rlp.pythonExecutable,
+      timeoutMs: this.#config.rlp.timeoutMs,
+      optional: true,
+    });
+  }
+
+  #initialPolicy(): AutonomyPolicy {
+    return {
+      ...DEFAULT_AUTONOMY_POLICY,
+      version: this.#config.rlp.autonomyPolicyVersion,
+      mode: this.#config.rlp.autonomyMode,
+    };
+  }
+
+  /** RLP installation status. */
+  rlpStatus(): ReturnType<RlpRuntime['status']> {
+    return this.#rlp?.status() ?? { available: false, skillPath: null, version: null, digest: null, reason: 'not initialized' };
+  }
+
+  /**
+   * Resolve a project's RLP control root through the storage matrix.
+   * @param projectRoot - defaults to this runtime's project root.
+   * @returns storage resolution; throws when RLP is unavailable.
+   */
+  async rlpStorage(projectRoot = this.#config.projectRoot): Promise<RlpStorageResolution> {
+    const rlp = this.#requireRlp();
+    return await rlp.storage().resolve(projectRoot);
+  }
+
+  /**
+   * Load the minimal RLP context plan for one task.
+   * @param input - preset/entry/stage/authorization/domain.
+   * @returns plan with real document bodies and load state.
+   */
+  async rlpContextPlan(input: { preset?: string; entry?: string; stage?: string; authorization?: string; domain?: string } = {}): Promise<RlpContextPlan> {
+    const rlp = this.#requireRlp();
+    const plan = await rlp.context().load(input);
+    return rlp.context().assertProceed(plan);
+  }
+
+  /**
+   * Build and verify a research context packet for one route.
+   * @param projectId - registered project.
+   * @param routeId - research route.
+   * @param task - packet task.
+   * @returns verified, non-canonical packet metadata.
+   */
+  async rlpContextPacket(projectId: string, routeId: string, task: 'continue_method' | 'review_paper' | 'audit_evidence' | 'discover' | 'inspect'): Promise<RlpContextPacket> {
+    const rlp = this.#requireRlp();
+    const project = this.#requireProjects().get(projectId);
+    const resolution = await rlp.storage().resolve(project.repositoryRef);
+    rlp.storage().assertFormalRun(resolution);
+    const statePath = rlp.storage().statePath(resolution, routeId);
+    return await rlp.context().buildPacket({ statePath, route: routeId, task });
+  }
+
+  /**
+   * Build a role-scoped subagent contract and prove it does not escalate.
+   * @param role - RLP research role.
+   * @param task - one-line task.
+   * @param authorization - RLP authorization level.
+   * @returns usable contract.
+   */
+  async rlpSubagentContract(role: RlpSubagentRole, task: string, authorization?: string): Promise<RlpSubagentContract> {
+    const rlp = this.#requireRlp();
+    return await rlp.subagentContext().buildOrThrow({
+      role,
+      task,
+      ...(authorization === undefined ? {} : { authorization }),
+    });
+  }
+
+  /** Record one immutable Trigger and apply the deterministic Gate. */
+  recordTrigger(input: TriggerInput): ReceiveResult {
+    return this.#requireAutonomy().receiveTrigger(input);
+  }
+
+  /** Create a Ticket explicitly from a previously accepted Trigger. */
+  createTicket(input: CreateTicketInput): TicketRecord {
+    return this.#requireAutonomy().createTicket(input);
+  }
+
+  listTickets(projectId: string): readonly TicketRecord[] {
+    return this.#requireAutonomy().listTickets(projectId);
+  }
+
+  getTicket(ticketId: string): TicketRecord {
+    return this.#requireAutonomy().getTicket(ticketId);
+  }
+
+  listTriggers(projectId: string, limit?: number): readonly TriggerRecord[] {
+    return this.#requireAutonomy().listTriggers(projectId, limit);
+  }
+
+  listTicketAssignments(ticketId: string): readonly AssignmentRecord[] {
+    return this.#requireAutonomy().listAssignments(ticketId);
+  }
+
+  assignTicket(ticketId: string, teamId: string, options: { taskId?: string; sessionId?: string } = {}): AssignmentRecord {
+    this.#requireTeams().get(teamId);
+    return this.#requireAutonomy().assign(ticketId, teamId, options);
+  }
+
+  startTicketAssignment(assignmentId: string, options: { taskId?: string; jobId?: string; sessionId?: string } = {}): AssignmentRecord {
+    return this.#requireAutonomy().startAssignment(assignmentId, options);
+  }
+
+  finishTicketAssignment(assignmentId: string, options: { ok: boolean; jobId?: string; errorCode?: string; errorMessage?: string }): AssignmentRecord {
+    return this.#requireAutonomy().finishAssignment(assignmentId, options);
+  }
+
+  markTicketCompute(ticketId: string, jobId: string, assignmentId?: string): TicketRecord {
+    return this.#requireAutonomy().markCompute(ticketId, jobId, assignmentId);
+  }
+
+  waitTicketForHuman(ticketId: string, reason: string): TicketRecord {
+    return this.#requireAutonomy().waitForHuman(ticketId, reason);
+  }
+
+  stopTicket(ticketId: string, reason: string, by = 'operator'): TicketRecord {
+    return this.#requireAutonomy().stopTicket(ticketId, by, reason);
+  }
+
+  resumeTicket(ticketId: string, explicit = false): TicketRecord {
+    return this.#requireAutonomy().resumeTicket(ticketId, { explicit });
+  }
+
+  endTicket(ticketId: string, reason: 'completed' | 'failed' | 'cancelled', by = 'operator'): TicketRecord {
+    return this.#requireAutonomy().endTicket(ticketId, reason, by);
+  }
+
+  /** Change the autonomy mode; existing Mandates are not revoked. */
+  setAutonomyMode(mode: AutonomyPolicy['mode']): AutonomyPolicy {
+    const autonomy = this.#requireAutonomy();
+    autonomy.setPolicy({ ...autonomy.policy, mode });
+    return autonomy.policy;
+  }
+
+  /** Run one durable-effects tick (also called by `runWorkerOnce`). */
+  runEffects(): Promise<EffectsTickReport> {
+    return this.#requireEffects().tick();
+  }
+
+  /** Compact autonomy status for the Workbench. */
+  autonomyStatus(projectId: string): {
+    mode: AutonomyPolicy['mode'];
+    policyVersion: string;
+    openTickets: number;
+    pendingEffects: number;
+    recentCandidates: number;
+  } {
+    const autonomy = this.#requireAutonomy();
+    const tickets = autonomy.listTickets(projectId);
+    const triggers = autonomy.listTriggers(projectId, 50);
+    return {
+      mode: autonomy.policy.mode,
+      policyVersion: autonomy.policy.version,
+      openTickets: tickets.filter(ticket => ticket.status !== 'ended').length,
+      pendingEffects: this.#requireEffects().list('pending').length,
+      recentCandidates: triggers.filter(trigger => trigger.disposition === 'candidate').length,
+    };
+  }
+
+
+  /**
+   * Fail closed unless the project uses a formal RLP runtime root.
+   *
+   * `MIGRATION_REQUIRED` and `AMBIGUOUS_STORAGE_ROOT` are engineering control
+   * states: Mesh must not dispatch science, write outcomes or rebuild a root
+   * from them. A missing root is resolved by RLP Bootstrap, not by Mesh.
+   * @param projectRoot - project to check; defaults to the configured root.
+   */
+  #assertRlpFormalRunSync(projectRoot = this.#config.projectRoot): void {
+    const layout = detectStorageLayout(projectRoot);
+    if (layout.kind === 'ambiguous') {
+      throw new MeshError('RLP_AMBIGUOUS_STORAGE_ROOT', 'both RLP storage roots exist; resolve them before formal runs', {
+        projectRoot, newRoot: layout.newRoot, legacyRoot: layout.legacyRoot,
+      });
+    }
+    if (layout.kind === 'legacy') {
+      throw new MeshError('RLP_MIGRATION_REQUIRED', 'legacy RLP root only; migrate the project before formal runs', {
+        projectRoot,
+        migration: 'python3 scripts/migrate_project_root.py inspect --project <project>',
+      });
+    }
+  }
+
+  async #requireRlpFormalRun(): Promise<void> {
+    const rlp = this.#requireRlp();
+    const resolver = rlp.storage();
+    resolver.assertFormalRun(await resolver.resolve(this.#config.projectRoot));
+  }
+
+  #requireRlp(): RlpRuntime {
+    this.#requireReady();
+    if (this.#rlp === null || !this.#rlp.available) {
+      throw new MeshError('RLP_UNAVAILABLE', 'research-lifecycle-protocol v2.2.0 is not available', {
+        reason: this.#rlp?.status().reason ?? 'not initialized',
+      });
+    }
+    return this.#rlp;
+  }
+
+  #requireAutonomy(): AutonomyEngine {
+    this.#requireReady();
+    if (this.#autonomy === null) throw new MeshError('STORAGE_CLOSED', 'autonomy engine is closed');
+    return this.#autonomy;
+  }
+
+  #requireEffects(): EffectsRunner {
+    this.#requireReady();
+    if (this.#effects === null) throw new MeshError('STORAGE_CLOSED', 'effects runner is closed');
+    return this.#effects;
+  }
+
   // -- projects and sessions ------------------------------------------------
+
 
   createProject(input: CreateProjectInput): ProjectView {
     const project = this.#requireProjects().create(input);
@@ -563,10 +830,44 @@ export class MeshService {
       gpuLeases: leases,
       recentEvents: this.#requireStore().listRecentEvents(30),
       rsi,
+      rlp: await this.#rlpWorkbenchSummary(project),
+      autonomy: this.autonomyStatus(projectId),
+      tickets: this.#requireAutonomy().listTickets(projectId),
+      triggers: this.#requireAutonomy().listTriggers(projectId, 20),
       modelErrors,
       worker: this.#requireWorker().status(),
       generatedAt: nowIso(),
     };
+  }
+
+
+  async #rlpWorkbenchSummary(project: ProjectView): Promise<import('./projects/workbench.ts').RlpSummary> {
+    const status = this.rlpStatus();
+    if (!status.available) {
+      return {
+        available: false, version: null, digest: null, skillPath: null,
+        storageStatus: null, storageRoot: null, formalRunAllowed: false, reason: status.reason,
+      };
+    }
+    try {
+      const resolution = await this.#requireRlp().storage().resolve(project.repositoryRef);
+      return {
+        available: true,
+        version: status.version,
+        digest: status.digest,
+        skillPath: status.skillPath,
+        storageStatus: resolution.status,
+        storageRoot: resolution.storageRoot,
+        formalRunAllowed: resolution.formalRunAllowed,
+        reason: resolution.runtimeReason,
+      };
+    } catch (error) {
+      return {
+        available: true, version: status.version, digest: status.digest, skillPath: status.skillPath,
+        storageStatus: null, storageRoot: null, formalRunAllowed: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   /** Read-only RSI summary. No Mesh-invented phase is returned. */
@@ -755,6 +1056,7 @@ export class MeshService {
         status: project.status,
       });
     }
+    this.#assertRlpFormalRunSync(project.repositoryRef);
     const routeStatePath = input.researchStatePath ?? canonicalStatePath(this.#config.projectRoot, input.routeId);
     const routeState = readCanonicalStateFile(routeStatePath);
     if (!routeState.exists || routeState.version === null) {
@@ -944,6 +1246,7 @@ export class MeshService {
 
   submitExperimentTask(input: SubmitExperimentTaskInput): { task: MeshTaskView; created: boolean } {
     this.#assertProjectActive(input.projectId);
+    this.#assertRlpFormalRunSync();
     const payload: import('./worker.ts').ExperimentTaskPayload = {
       workerId: input.workerId,
       gpuId: input.gpuId,
@@ -1017,8 +1320,33 @@ export class MeshService {
 
   // -- worker and jobs -----------------------------------------------------
 
-  runWorkerOnce(options: { poll?: boolean } = {}): Promise<WorkerRoundResult> {
-    return this.#requireWorker().runOnce(options);
+  async runWorkerOnce(options: { poll?: boolean } = {}): Promise<WorkerRoundResult> {
+    await this.#requireEffects().tick();
+    const result = await this.#requireWorker().runOnce(options);
+    for (const collected of result.collected) {
+      try {
+        // Artifact ingestion is the durable wake-up event: an Agent turn may be
+        // long gone while the compute job finished.
+        const assignment = this.#autoStore?.findAssignmentByJob(collected.jobId);
+        this.#requireAutonomy().receiveTrigger({
+          source: 'artifact',
+          eventId: `artifact:${collected.jobId}`,
+          projectId: collected.task.projectId,
+          kind: 'artifact_ingested',
+          dedupeKey: `artifact:${collected.jobId}`,
+          payload: {
+            jobId: collected.jobId,
+            artifactManifestDigest: collected.artifactManifestDigest,
+            ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
+          },
+          ...(assignment === undefined ? {} : { ticketId: assignment.ticketId }),
+        });
+      } catch (error) {
+        this.#logger.warn('artifact wake-up trigger failed', { jobId: collected.jobId, error: String(error) });
+      }
+    }
+    await this.#requireEffects().tick();
+    return result;
   }
 
   runUntilIdle(maxRounds = 50): Promise<number> {

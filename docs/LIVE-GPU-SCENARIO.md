@@ -1,3 +1,5 @@
+> Historical engineering run (RSI-era paths). Current integration: `docs/fusion/`.
+
 # Live local GPU scenario — 2 groups × 2 subagents
 
 This is an engineering integration run of `dsh-research-mesh`, not a scientific

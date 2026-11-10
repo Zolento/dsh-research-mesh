@@ -16,6 +16,7 @@ import type {
   CondaConfig,
   MeshConfig,
   MeshLimits,
+  RlpConfig,
   RsiConfig,
   SessionBinding,
   SshConfig,
@@ -337,18 +338,35 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
   const nativeMembers = booleanField(input.nativeMembers, 'nativeMembers', false);
   const workers = resolveWorkers(input.workers, conda, ssh, allowFakeTransport);
 
-  const rsiRaw = optionalObject(input.rsi, 'rsi') ?? {};
-  const skillPathRaw = optionalString(rsiRaw.skillPath, 'rsi.skillPath');
+  // `rlp` is canonical; `rsi` is the deprecated alias for the same block.
+  const rlpRaw = optionalObject(input.rlp ?? input.rsi, 'rlp') ?? {};
+  const skillPathRaw = optionalString(rlpRaw.skillPath, 'rlp.skillPath');
   const skillPath = skillPathRaw === undefined
     ? undefined
-    : ensureDirectory(expandHome(skillPathRaw), 'rsi.skillPath');
-  const rsi: RsiConfig = {
-    enabled: booleanField(rsiRaw.enabled, 'rsi.enabled', DEFAULT_RSI.enabled),
+    : ensureDirectory(expandHome(skillPathRaw), 'rlp.skillPath');
+  const pythonExecutable = optionalString(rlpRaw.pythonExecutable, 'rlp.pythonExecutable')
+    ?? DEFAULT_RSI.pythonExecutable;
+  const allowTestStub = booleanField(rlpRaw.allowTestStub, 'rlp.allowTestStub', false);
+  const autonomyModeRaw = optionalString(rlpRaw.autonomyMode, 'rlp.autonomyMode') ?? 'observe';
+  if (autonomyModeRaw !== 'off' && autonomyModeRaw !== 'observe' && autonomyModeRaw !== 'auto') {
+    invalid("rlp.autonomyMode must be 'off', 'observe' or 'auto'", { autonomyMode: autonomyModeRaw });
+  }
+  const rlp: RlpConfig = {
+    enabled: booleanField(rlpRaw.enabled, 'rlp.enabled', DEFAULT_RSI.enabled),
     ...(skillPath === undefined ? {} : { skillPath }),
-    pythonExecutable: optionalString(rsiRaw.pythonExecutable, 'rsi.pythonExecutable') ?? DEFAULT_RSI.pythonExecutable,
-    stateCheckTimeoutMs: integerField(rsiRaw.stateCheckTimeoutMs, 'rsi.stateCheckTimeoutMs', DEFAULT_RSI.stateCheckTimeoutMs, 1_000, 10 * 60 * 1000),
-    gateTimeoutMs: integerField(rsiRaw.gateTimeoutMs, 'rsi.gateTimeoutMs', DEFAULT_RSI.gateTimeoutMs, 1_000, 30 * 60 * 1000),
-    allowTestStub: booleanField(rsiRaw.allowTestStub, 'rsi.allowTestStub', false),
+    pythonExecutable,
+    timeoutMs: integerField(rlpRaw.timeoutMs, 'rlp.timeoutMs', 60_000, 1_000, 30 * 60 * 1000),
+    allowTestStub,
+    autonomyMode: autonomyModeRaw,
+    autonomyPolicyVersion: optionalString(rlpRaw.autonomyPolicyVersion, 'rlp.autonomyPolicyVersion') ?? 'policy-1',
+  };
+  const rsi: RsiConfig = {
+    enabled: rlp.enabled,
+    ...(skillPath === undefined ? {} : { skillPath }),
+    pythonExecutable,
+    stateCheckTimeoutMs: integerField(rlpRaw.stateCheckTimeoutMs, 'rsi.stateCheckTimeoutMs', DEFAULT_RSI.stateCheckTimeoutMs, 1_000, 10 * 60 * 1000),
+    gateTimeoutMs: integerField(rlpRaw.gateTimeoutMs, 'rsi.gateTimeoutMs', DEFAULT_RSI.gateTimeoutMs, 1_000, 30 * 60 * 1000),
+    allowTestStub,
   };
 
   const artifactsRaw = optionalObject(input.artifacts, 'artifacts') ?? {};
@@ -409,6 +427,7 @@ export function resolveConfig(raw: unknown, options: { cwd?: string } = {}): Mes
     workers,
     conda,
     ssh,
+    rlp,
     rsi,
     artifacts,
     allowFakeTransport,

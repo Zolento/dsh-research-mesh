@@ -1,3 +1,5 @@
+> Historical record: the copied bridge modules still carry RSI-era names; the live integration layer is `src/rlp/`.
+
 # Integrated bridge domain
 
 `src/bridge/` is derived from the MIT-licensed

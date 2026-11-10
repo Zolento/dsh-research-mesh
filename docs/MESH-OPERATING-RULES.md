@@ -3,13 +3,13 @@
 **Collaboration contract:** `dsh-research-mesh/mesh-collaboration@1`.
 
 This is the operating contract implemented by the plugin for a whole-repository
-RSI project such as MoSA.
+RLP project such as MoSA.
 
 ## Layout
 
 ```text
-canonical checkout/          # solo DSH session, canonical RSI state, Git history
-  .research-idea-pipeline/routes/<R>/research-state.json
+canonical checkout/          # solo DSH session, canonical RLP state, Git history
+  .research-lifecycle-protocol/routes/<R>/research-state.json
   .git/
 
 outside the checkout/
@@ -29,11 +29,11 @@ outside the checkout/
 - `artifactsDir` defaults to `<controlDir>/artifacts`; for MoSA it points at
   `/data/zhanglt/MoSA_store/mesh/artifacts`. Large products belong in the store,
   never in the worktree or canonical checkout.
-- The worker reads the canonical RSI state through `RsiAdapter`; it never writes
+- The worker reads the canonical RLP state through `RsiAdapter`; it never writes
   `research-state.json`. Git naturally checks out tracked state into a worktree,
   but that copy is only a baseline snapshot; reads use the canonical absolute
   path, and the only authority is the canonical state.
-- Mesh does not allocate RSI experiment IDs. The RSI single writer reserves the
+- Mesh does not allocate RSI experiment IDs. The RLP single writer reserves the
   route/XID before dispatch; the worker records the supplied id and artifact
   paths so collisions can be detected on merge.
 - Job creation starts from the worktree HEAD; uncommitted canonical changes are
@@ -41,7 +41,7 @@ outside the checkout/
 - A handled consumed-ledger crash is marked `RECONCILE_REQUIRED`; it is never
   resubmitted automatically.
 - A GPU lease is not a system-wide lock. Operators must check the Mesh lease,
-  RSI scheduler and the actual GPU process together; a solo session is invisible
+  RLP scheduler and the actual GPU process together; a solo session is invisible
   to the plugin lease.
 
 ## Solo + team coexistence
@@ -50,8 +50,8 @@ outside the checkout/
 |---|---|
 | Solo DSH session | canonical checkout |
 | Mesh group code | separate `mesh/<group>` worktree |
-| RSI state | canonical checkout, read-only to Mesh |
-| GPU/experiment | Mesh lease + RSI scheduler; no concurrent same-GPU run |
+| RLP state | canonical checkout, read-only to Mesh |
+| GPU/experiment | Mesh lease + RLP scheduler; no concurrent same-GPU run |
 | Merge back | review worktree commits, then merge/cherry-pick |
 
 Do not use `cp -a` for isolation. Use a Git worktree, or let Mesh create group

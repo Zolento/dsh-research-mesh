@@ -1,3 +1,5 @@
+> Historical migration note written for the legacy root. New projects use `.research-lifecycle-protocol/`; migrating an existing project is an explicit RLP operation and is never automatic.
+
 # MoSA → Research Mesh migration
 
 ## 1. RSI state paths
@@ -5,9 +7,9 @@
 MoSA is already a canonical RSI project. The paths the plugin needs are:
 
 ```text
-/home/lenovo/code/myproj/MoSA/.research-idea-pipeline/routes/A/research-state.json
-/home/lenovo/code/myproj/MoSA/.research-idea-pipeline/routes/B/research-state.json
-/home/lenovo/code/myproj/MoSA/.research-idea-pipeline/routes/C/research-state.json
+/home/lenovo/code/myproj/MoSA/.research-lifecycle-protocol/routes/A/research-state.json
+/home/lenovo/code/myproj/MoSA/.research-lifecycle-protocol/routes/B/research-state.json
+/home/lenovo/code/myproj/MoSA/.research-lifecycle-protocol/routes/C/research-state.json
 ```
 
 Select the **repository root** `/home/lenovo/code/myproj/MoSA`, not
@@ -86,7 +88,7 @@ Add this to the project's `AGENTS.md` (canonical or the worktree copy):
 - Mesh 控制目录与 worktree 根必须放在仓库外（例如
   /home/lenovo/code/myproj/.mesh/<project>），不得提交进 Git。
 - canonical Research State 位于
-  .research-idea-pipeline/routes/<route>/research-state.json；Mesh worker
+  .research-lifecycle-protocol/routes/<route>/research-state.json；Mesh worker
   只读该状态，不得在 worktree 内另造或改写同名状态。
 - 建组前先提交或 stash canonical 的未提交改动；worktree 从 HEAD 创建。
 - 单开会话与 Mesh 组不得同时占用同一 GPU/实验；以 Mesh GPU lease 和
@@ -104,7 +106,7 @@ Paste this into a DSH/Claude session:
 AGENTS.md 与 rsi-pipeline skill：
 1. 不复制 9.3GB 代码目录，不新建 MoSA_* 兄弟副本；使用 Git worktree 或
    Mesh 自动创建的 worktree。
-2. 保留现有 .research-idea-pipeline/routes/{A,B,C}/research-state.json，
+2. 保留现有 .research-lifecycle-protocol/routes/{A,B,C}/research-state.json，
    不修改 canonical Research State，不伪造 state_version。
 3. 确认 sourceDir 为仓库根，controlDir/worktreesDir 放在仓库外的
    /home/lenovo/code/myproj/.mesh/MoSA 下。

@@ -8,10 +8,10 @@ import { test } from 'node:test';
 import { makeService, makeTempProject } from '../helpers/env.ts';
 import { MeshError } from '../../src/errors.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 
 function statePath(projectRoot: string): string {
-  const dir = join(projectRoot, '.research-idea-pipeline', 'routes', 'A');
+  const dir = join(projectRoot, '.research-lifecycle-protocol', 'routes', 'A');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'research-state.json');
   copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), path);
@@ -112,7 +112,7 @@ test('control sessions bind explicitly, conflict, detach and do not become capta
     assert.equal(controlBinding?.role, 'control');
     assert.equal(controlBinding?.groupId, null);
 
-    const secondState = join(project.root, '.research-idea-pipeline', 'routes', 'B');
+    const secondState = join(project.root, '.research-lifecycle-protocol', 'routes', 'B');
     mkdirSync(secondState, { recursive: true });
     const secondStatePath = join(secondState, 'research-state.json');
     copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), secondStatePath);
@@ -261,7 +261,7 @@ test('API group creation requires a readable RSI state for its research route', 
       (error: unknown) => error instanceof MeshError && error.code === 'RSI_STATE_UNAVAILABLE',
     );
     assert.equal(service.listTeams(created.projectId).length, 0);
-    const routeB = join(project.root, '.research-idea-pipeline', 'routes', 'B');
+    const routeB = join(project.root, '.research-lifecycle-protocol', 'routes', 'B');
     mkdirSync(routeB, { recursive: true });
     copyFileSync(stateA, join(routeB, 'research-state.json'));
     const groupB = await service.createGroup({ projectId: created.projectId, routeId: 'B', name: 'group-b', rootSessionId: 'root-b' });
@@ -302,7 +302,7 @@ test('member binding cannot name a group from another project', async () => {
   const { service } = await makeService(project);
   try {
     const stateA = statePath(project.root);
-    const routeB = join(project.root, '.research-idea-pipeline', 'routes', 'B');
+    const routeB = join(project.root, '.research-lifecycle-protocol', 'routes', 'B');
     mkdirSync(routeB, { recursive: true });
     const stateB = join(routeB, 'research-state.json');
     copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), stateB);
@@ -398,18 +398,21 @@ test('attaching a runnable project initializes control, worktrees and store dire
   }
 });
 
-test('repository inspection discovers RSI routes and reports migration need', async () => {
+test('repository inspection discovers RLP routes and reports the storage layout', async () => {
   const project = makeTempProject();
   const { service } = await makeService(project);
   try {
     const before = service.inspectProjectRepository(project.source);
-    assert.equal(before.migrationRequired, true);
+    // A checkout with no control root is a NEW project, not a legacy one.
+    assert.equal(before.storageKind, 'none');
+    assert.equal(before.migrationRequired, false);
     assert.deepEqual(before.routes, []);
     assert.equal(before.runnable, true);
-    const routeDir = join(project.source, '.research-idea-pipeline', 'routes', 'A');
+    const routeDir = join(project.source, '.research-lifecycle-protocol', 'routes', 'A');
     mkdirSync(routeDir, { recursive: true });
     writeFileSync(join(routeDir, 'research-state.json'), JSON.stringify({ state_version: '7' }));
     const after = service.inspectProjectRepository(project.source);
+    assert.equal(after.storageKind, 'new');
     assert.equal(after.migrationRequired, false);
     assert.equal(after.routes.length, 1);
     assert.equal(after.routes[0]?.routeId, 'A');

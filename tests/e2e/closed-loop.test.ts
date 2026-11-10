@@ -12,7 +12,7 @@ import { FakeTransport } from '../../src/executors/transport.ts';
 import { MeshError } from '../../src/errors.ts';
 import { sleep } from '../../src/util/time.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 
 const EXPERIMENT_SCRIPT = `import json, os
 out = os.environ["MESH_ARTIFACT_DIR"]

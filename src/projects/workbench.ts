@@ -5,6 +5,8 @@ import type { TeamView, SubagentView } from '../teams/manager.ts';
 import type { MeshTaskView } from '../scheduler/scheduler.ts';
 import type { ProjectView } from './registry.ts';
 import type { AgentModelRecord } from '../storage/types.ts';
+import type { TicketRecord, TriggerRecord } from '../autonomy/types.ts';
+import type { RlpStorageStatus } from '../rlp/types.ts';
 
 /** One RSI scheduler action, exactly as stored in `scheduler.json`. */
 export interface RsiNextAction {
@@ -40,6 +42,27 @@ export interface WorkbenchGroup {
   readonly liveStatus: Readonly<Record<string, string | null>>;
 }
 
+/** Autonomy status shown next to the tickets. */
+export interface AutonomySummary {
+  readonly mode: 'off' | 'observe' | 'auto';
+  readonly policyVersion: string;
+  readonly openTickets: number;
+  readonly pendingEffects: number;
+  readonly recentCandidates: number;
+}
+
+/** RLP installation and storage status. */
+export interface RlpSummary {
+  readonly available: boolean;
+  readonly version: string | null;
+  readonly digest: string | null;
+  readonly skillPath: string | null;
+  readonly storageStatus: RlpStorageStatus | null;
+  readonly storageRoot: string | null;
+  readonly formalRunAllowed: boolean;
+  readonly reason: string | null;
+}
+
 /** Everything the Project Workbench renders in one read. */
 export interface WorkbenchSnapshot {
   readonly project: ProjectView;
@@ -48,6 +71,10 @@ export interface WorkbenchSnapshot {
   readonly gpuLeases: readonly GpuLeaseRecord[];
   readonly recentEvents: readonly MeshEventRecord[];
   readonly rsi: RsiSummary;
+  readonly rlp: RlpSummary;
+  readonly autonomy: AutonomySummary;
+  readonly tickets: readonly TicketRecord[];
+  readonly triggers: readonly TriggerRecord[];
   readonly modelErrors: readonly { group: string; scope: string; provider: string; model: string; reason: string }[];
   readonly worker: { running: boolean; lastError: string | null };
   readonly generatedAt: string;

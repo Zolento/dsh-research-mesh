@@ -70,7 +70,30 @@ export interface SshConfig {
   readonly serverAliveIntervalSec: number;
 }
 
-/** RSI adapter policy. */
+/**
+ * RLP policy (canonical).
+ *
+ * The `RsiConfig` name below is a deprecated alias kept so existing deployments
+ * and call sites keep working; both resolve from the same `rlp`/`rsi` block.
+ */
+export interface RlpConfig {
+  /** Whether RLP integration is enabled. */
+  readonly enabled: boolean;
+  /** Explicit skill root; discovery is skipped when present. */
+  readonly skillPath?: string;
+  /** Python interpreter for RLP scripts. */
+  readonly pythonExecutable: string;
+  /** Timeout for validators and receipt checks. */
+  readonly timeoutMs: number;
+  /** Test-only escape hatch for RLP preview execution. */
+  readonly allowTestStub: boolean;
+  /** Default autonomy mode for new projects. */
+  readonly autonomyMode: 'off' | 'observe' | 'auto';
+  /** Policy version recorded on Mandates. */
+  readonly autonomyPolicyVersion: string;
+}
+
+/** @deprecated Use {@link RlpConfig}; kept for configuration compatibility. */
 export interface RsiConfig {
   /** Whether RSI authorization is required for experiment manifests. */
   readonly enabled: boolean;
@@ -122,7 +145,9 @@ export interface MeshConfig {
   readonly conda: CondaConfig;
   /** SSH policy. */
   readonly ssh: SshConfig;
-  /** RSI policy. */
+  /** RLP policy (canonical). */
+  readonly rlp: RlpConfig;
+  /** @deprecated Use {@link MeshConfig.rlp}. */
   readonly rsi: RsiConfig;
   /** Artifact limits. */
   readonly artifacts: ArtifactConfig;

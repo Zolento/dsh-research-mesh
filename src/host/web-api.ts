@@ -302,6 +302,116 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: await service.simulateLocalTask(projectId, teamId) });
         return;
       }
+      if (path === '/autonomy' && method === 'GET') {
+        const projectId = url.searchParams.get('projectId');
+        if (projectId === null) throw new MeshError('INVALID_ARGUMENT', 'projectId is required');
+        send(res, 200, {
+          ok: true,
+          value: {
+            status: service.autonomyStatus(projectId),
+            tickets: service.listTickets(projectId),
+            triggers: service.listTriggers(projectId, 50),
+            rlp: service.rlpStatus(),
+          },
+        });
+        return;
+      }
+      if (path === '/triggers' && method === 'POST') {
+        const body = await readJson(req);
+        const source = stringField(body, 'source');
+        if (!['user', 'session', 'ticket_followup', 'team_task', 'compute_job', 'artifact', 'rlp_outcome', 'rlp_assurance', 'resource', 'policy', 'resume'].includes(source)) {
+          throw new MeshError('INVALID_ARGUMENT', 'invalid trigger source');
+        }
+        const kind = stringField(body, 'kind');
+        const result = service.recordTrigger({
+          source: source as never,
+          eventId: stringField(body, 'eventId'),
+          projectId: stringField(body, 'projectId'),
+          kind: kind as never,
+          explicit: body.explicit === true,
+          ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+          ...(typeof body.ticketId === 'string' ? { ticketId: body.ticketId } : {}),
+          ...(typeof body.threadKey === 'string' ? { threadKey: body.threadKey } : {}),
+          ...(typeof body.payload === 'object' && body.payload !== null ? { payload: body.payload as Record<string, unknown> } : {}),
+        });
+        send(res, 200, { ok: true, value: result });
+        return;
+      }
+      if (path === '/tickets' && method === 'POST') {
+        const body = await readJson(req);
+        const ticket = service.createTicket({
+          projectId: stringField(body, 'projectId'),
+          routeId: stringField(body, 'routeId'),
+          title: stringField(body, 'title'),
+          triggerId: stringField(body, 'triggerId'),
+          explicit: body.explicit === true,
+          ...(typeof body.objective === 'string' ? { objective: body.objective } : {}),
+          ...(typeof body.groupId === 'string' ? { groupId: body.groupId } : {}),
+          ...(typeof body.priority === 'number' ? { priority: body.priority } : {}),
+        });
+        send(res, 200, { ok: true, value: ticket });
+        return;
+      }
+      if (path === '/tickets/state' && method === 'POST') {
+        const body = await readJson(req);
+        const ticketId = stringField(body, 'ticketId');
+        const action = stringField(body, 'action');
+        if (action === 'stop') {
+          send(res, 200, { ok: true, value: service.stopTicket(ticketId, typeof body.reason === 'string' ? body.reason : 'operator stop') });
+          return;
+        }
+        if (action === 'resume') {
+          send(res, 200, { ok: true, value: service.resumeTicket(ticketId, body.explicit === true) });
+          return;
+        }
+        if (action === 'assign') {
+          send(res, 200, { ok: true, value: service.assignTicket(ticketId, stringField(body, 'teamId')) });
+          return;
+        }
+        if (action === 'start') {
+          send(res, 200, { ok: true, value: service.startTicketAssignment(stringField(body, 'assignmentId')) });
+          return;
+        }
+        if (action === 'finish') {
+          send(res, 200, {
+            ok: true,
+            value: service.finishTicketAssignment(stringField(body, 'assignmentId'), {
+              ok: body.ok === true,
+              ...(typeof body.errorCode === 'string' ? { errorCode: body.errorCode } : {}),
+              ...(typeof body.errorMessage === 'string' ? { errorMessage: body.errorMessage } : {}),
+            }),
+          });
+          return;
+        }
+        if (action === 'wait') {
+          send(res, 200, { ok: true, value: service.waitTicketForHuman(ticketId, stringField(body, 'reason')) });
+          return;
+        }
+        if (action === 'end') {
+          const reason = stringField(body, 'reason');
+          if (reason !== 'completed' && reason !== 'failed' && reason !== 'cancelled') {
+            throw new MeshError('INVALID_ARGUMENT', 'end reason must be completed, failed or cancelled');
+          }
+          send(res, 200, { ok: true, value: service.endTicket(ticketId, reason) });
+          return;
+        }
+        throw new MeshError('INVALID_ARGUMENT', 'ticket action must be stop, resume, assign, start, finish, wait or end');
+      }
+      if (path === '/autonomy/mode' && method === 'POST') {
+        const body = await readJson(req);
+        const mode = stringField(body, 'mode');
+        if (mode !== 'off' && mode !== 'observe' && mode !== 'auto') {
+          throw new MeshError('INVALID_ARGUMENT', 'mode must be off, observe or auto');
+        }
+        send(res, 200, { ok: true, value: service.setAutonomyMode(mode) });
+        return;
+      }
+      if (path === '/rlp' && method === 'GET') {
+        const projectId = url.searchParams.get('projectId');
+        const storage = projectId === null ? null : await service.rlpStorage();
+        send(res, 200, { ok: true, value: { status: service.rlpStatus(), storage } });
+        return;
+      }
       if (path === '/native-delegation' && method === 'GET') {
         const sessionId = url.searchParams.get('sessionId');
         if (sessionId === null) throw new MeshError('INVALID_ARGUMENT', 'sessionId is required');

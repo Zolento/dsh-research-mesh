@@ -27,7 +27,10 @@ PATH=/home/lenovo/.nvm/versions/node/v24.12.0/bin:$PATH \
   node --test tests/integration/dsh-loader.test.ts
 ```
 
-`npm run test:all` is the aggregate: 99 tests after the harness audit, rc1 adaptation, live GPU/SSH/native runs, whole-repo onboarding, consumed coordinator/recovery, project auto-init and the follow-up defect fixes (86 unit + 8 integration + 5 end-to-end). The audit findings and their
+`npm run test:all` is the aggregate: 124 tests after the RLP v2.2.0 fusion
+(107 unit + 11 integration + 6 end-to-end). The v0.1.0 RSI-era baseline and the
+harness-audit findings are historical; current evidence is in
+[`fusion/07-test-evidence.md`](fusion/07-test-evidence.md). The audit findings and their
 regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 
 ## Coverage map
@@ -42,12 +45,14 @@ regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 | `gpu.test.ts` | two tasks lease GPU 0/1 independently; no double lease; one task cannot hold two GPUs; unknown/busy fail-closed; reconcile then reuse |
 | `executor.test.ts` | exact Conda argv; manifest traversal/absolute/GPU/forged-digest rejection; test-stub gate; generated wrapper with hostile argv (no shell execution); artifact-manifest path/hash validation |
 | `rsi.test.ts` | real skill discovery; read-only `state_check`; real receipt preview; real consumed receipt via ledger; state-change rejection; preview forbidden without explicit test flag |
-| `projects.test.ts` | project registration; invalid/missing RSI state; restart; readability failure; control/member bindings and cross-project refusal; manual-pause preservation; archive; startup pause reconciliation; Captain-binding rollback; destroy detaches bindings |
+| `projects.test.ts` | project registration; invalid/missing RLP state; restart; readability failure; control/member bindings and cross-project refusal; manual-pause preservation; archive; startup pause reconciliation; Captain-binding rollback; destroy detaches bindings |
 | `model-settings.test.ts` | Config-backed DSH settings write/version; stale-cache refresh; empty group schema; override-without-default rejection; selected model reaches session host; file store restart |
 | `client-bundle.test.ts` | loader id; inject; main/sidebar/settings/header/hero registrations; initial component render |
 | `native-guard.test.ts` | `tools.guard` denies member fan-out, paused group, group cap and global cap; ignores unrelated tools |
 | `shim.test.ts` | blocking-shim spec/result protocol, exit-code mirroring, timeout code, schema rejection |
 | `session-host.test.ts` | controller member creation without live Captain; model failure cancels the short-lived session |
+| `rlp.test.ts` | RLP v2.2.0 discovery/digest; storage matrix; L0/L1/L2 plan; packet staleness; subagent permits |
+| `autonomy.test.ts` | trigger idempotency; modes; mandates; assignments; wake-up; effects retry/reconcile |
 
 ### Integration
 
@@ -57,6 +62,7 @@ regression tests are in [`HARNESS-AUDIT.md`](HARNESS-AUDIT.md).
 | `multi-team.test.ts` | three concurrent groups, task/team/workspace binding, file isolation, GPU cross-team coordination |
 | `dsh-loader.test.ts` | real `@deepseek-ai/dsh-app-boot` Cordis loader: mount, service, config, local task, unload/close |
 | `web-api.test.ts` | real loopback HTTP: bootstrap, project creation, workbench, simulation, same-origin 403, content-type 415, model save/invalid |
+| `rlp-service.test.ts` | service-level RLP status/storage; ticket projection; legacy/ambiguous root refusal |
 
 ### End to end
 

@@ -19,7 +19,10 @@ Cordis plugin (src/index.ts)
 │   ├── ExperimentJobService                RSI authorization → manifest
 │   ├── RemoteJobExecutor                   FakeSSH / SSH shared workflow
 │   ├── LocalExecutor                       controller-side Conda tasks
-│   ├── RsiAdapter                          canonical state + receipt gates
+│   ├── RlpRuntime                          skill discovery, storage matrix, L0/L1/L2
+│   ├── AutonomyEngine                      Trigger → Gate → Ticket/Mandate → Assignment
+│   ├── EffectsRunner                       durable outbox in the same SQLite transaction
+│   ├── RsiAdapter (deprecated)             canonical state + receipt gates
 │   ├── MeshWorker                          explicit claim/poll loop
 │   └── integrated bridge domain            store, artifacts, state gate
 ├── Host API (src/host/web-api.ts)          /dsh-research-mesh/api
@@ -40,10 +43,14 @@ domain and Mesh execution tables. The bridge store owns `teams`, `members`, `tas
 - `mesh_events`, `mesh_outcomes`
 
 `SqliteTeamStore.transaction()` runs Mesh rows and bridge rows on the same connection.
-Nested bridge calls use savepoints.
+Nested bridge calls use savepoints. The autonomy layer adds
+`mesh_triggers`, `mesh_tickets`, `mesh_mandates`, `mesh_assignments`,
+`mesh_subscriptions` and `mesh_effects` to the same database.
 
 Scientific state is **not** in SQLite. Canonical `research-state.json` stays under the
-project's `.research-idea-pipeline/routes/<R>/` and is read-only to Mesh.
+project's `.research-lifecycle-protocol/routes/<R>/` and is read-only to Mesh. A
+legacy `.research-idea-pipeline/` root is audit/migration-only and makes formal
+runs fail closed (`MIGRATION_REQUIRED`).
 
 ## Project and session lifecycle
 
@@ -71,20 +78,45 @@ Dependency completion is evaluated inside the claim transaction.
 An experiment path is:
 
 ```
-RSI canonical state / scheduler / manifest / receipt
-  → RsiAdapter verifies authorization (preview in test mode; consumed ledger in production)
+RLP canonical state / scheduler / manifest / receipt
+  → RlpAdapter/RsiAdapter verifies authorization (preview in test mode; consumed ledger in production)
   → ExperimentJobService builds immutable manifest bound to worktree HEAD commit
   → GPU lease + fail-closed probe
   → RemoteJobExecutor stages git archive + 0600 wrapper + manifest
   → transport.submit (FakeSSH or SSH)
   → remote job-state.json / artifact-manifest.json
   → output-ready → verified SHA-256 ingestion → INGESTED → ASSURANCE_PENDING
-  → outcome handoff JSON for RSI
+  → outcome handoff JSON for RLP
 ```
 
 `SubmitUnknown` marks `submitted_unconfirmed` and `RECONCILE_REQUIRED`; no retry is
 automatic. Recovery queries remote state first. Partial artifact transfer leaves the
 job at `OUTPUT_READY` and retries only the transfer.
+
+## Autonomy
+
+`AutonomyEngine` (`src/autonomy/engine.ts`) owns immutable Triggers, Tickets,
+Mandates, Assignments and Subscriptions. It is not a scheduler: a Ticket
+references an existing Team Task or compute job through an Assignment. Two
+invariants are mechanical:
+
+- a model's Assessment cannot widen a Mandate (`operations`, resource ceiling
+  and RLP scope come from the Trigger + Policy);
+- execution success parks a Ticket at `waiting_evidence`; only RLP's outcome
+  gate permits `completed`.
+
+Durable effects (`src/autonomy/effects.ts`) are enqueued in the same transaction
+that changes autonomy rows and run after commit with bounded backoff.
+`reconcile-only` effects park on error and are never re-executed, which keeps an
+unknown remote submission from becoming a duplicate experiment.
+
+## RLP integration
+
+`RlpRuntime` (`src/rlp/`) discovers `research-lifecycle-protocol` v2.2.0,
+resolves the storage matrix through `rlp_paths.py`, loads L0/L1/L2 context
+through `context_planner.py`, builds and verifies Research Context Packets, and
+builds per-role subagent contracts with a permits-subset check. Mesh never
+re-implements an RLP rule and never writes canonical state.
 
 ## Web console extension points
 

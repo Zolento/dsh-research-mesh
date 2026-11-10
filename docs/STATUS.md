@@ -1,3 +1,5 @@
+> Historical record (2026-11-05). Tool names, paths and counts below describe the v0.1.0 RSI-era baseline; the current authority is RLP v2.2.0 with the `.research-lifecycle-protocol/` root. Current counts are in `docs/fusion/07-test-evidence.md`.
+
 # Delivery status — v0.1.0
 
 Date: 2026-11-05 (Asia/Shanghai)

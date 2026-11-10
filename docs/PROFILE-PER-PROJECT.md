@@ -9,7 +9,7 @@ This is the deployment model for Research Mesh.
 ## Why
 
 - The plugin has exactly one executable `sourceDir` per runtime.
-- RSI state, receipts, control DB, worktrees, artifacts and model settings stay
+- RLP state, receipts, control DB, worktrees, artifacts and model settings stay
   isolated per project.
 - A profile can be paused, restarted or upgraded without touching another
   project.
@@ -35,8 +35,8 @@ profile:          ~/.dsh/profiles/web-mosa
 control:          /home/lenovo/code/myproj/.mesh/MoSA
 worktrees:        /home/lenovo/code/myproj/.mesh/MoSA/worktrees
 artifacts store:  /data/zhanglt/MoSA_store/mesh/artifacts
-rsi skill:        ~/.agents/skills/rsi-pipeline   (shared)
-RSI state:        <project>/.research-idea-pipeline/routes/<R>/research-state.json
+rsi skill:        ~/.agents/skills/research-lifecycle-protocol   (shared)
+RLP state:        <project>/.research-lifecycle-protocol/routes/<R>/research-state.json
 ```
 
 Each profile has its own:
@@ -115,11 +115,11 @@ worktreesDir or artifactsDir between profiles.
 
 ## What is shared
 
-- Installed RSI skill (`~/.agents/skills/rsi-pipeline`)
+- Installed RLP skill (`~/.agents/skills/research-lifecycle-protocol`)
 - DSH binary/runtime
 - `/data/zhanglt/<project>_store` storage medium, but each project has its own
   store subdirectory
-- The project's `AGENTS.md` and canonical RSI state (read-only to Mesh)
+- The project's `AGENTS.md` and canonical RLP state (read-only to Mesh)
 
 ## What is not shared
 
@@ -139,7 +139,7 @@ The current `web` profile is already the MoSA profile. You do not need to create
 2. Add the plugin.
 3. Set `projectRoot/sourceDir/controlDir/worktreesDir/artifactsDir`.
 4. Restart that profile on its own port.
-5. Open its Web UI and link the project. The RSI state is auto-detected and the
+5. Open its Web UI and link the project. The RLP state is auto-detected and the
    default control/worktrees/artifacts/store directories are created automatically.
 
 No Mesh group is created by profile setup. Do not copy the canonical checkout;

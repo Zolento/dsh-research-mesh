@@ -86,15 +86,24 @@ export interface RsiVerifyInput {
   readonly ledgerPath?: string;
 }
 
-/** Official discovery candidates, in priority order. */
-export const DEFAULT_RSI_PATHS: readonly string[] = [
-  join(process.env.HOME ?? '', '.agents', 'skills', 'rsi-pipeline'),
-  join(process.env.HOME ?? '', 'code', 'myproj', 'skills-dev', 'research-idea-pipeline', 'skill-rsi-dev', 'research-idea-pipeline'),
+/**
+ * Official discovery candidates, in priority order.
+ *
+ * Only the RLP v2.2.0 install is implicit. A legacy `rsi-pipeline` checkout is
+ * selected only when the operator points `rlp.skillPath` at it.
+ */
+export const DEFAULT_RLP_PATHS: readonly string[] = [
+  join(process.env.HOME ?? '', '.agents', 'skills', 'research-lifecycle-protocol'),
 ];
+
+/** @deprecated Use {@link DEFAULT_RLP_PATHS}. */
+export const DEFAULT_RSI_PATHS = DEFAULT_RLP_PATHS;
 
 const REQUIRED_FILES: readonly string[] = [
   'SKILL.md',
   'shared-contract.md',
+  'preset-registry.json',
+  'scripts/rlp_paths.py',
   'scripts/state_check.py',
   'scripts/experiment_execute.py',
   'scripts/execution_gate.py',
@@ -119,7 +128,14 @@ function extractStateVersion(json: Readonly<Record<string, unknown>>): string | 
   return null;
 }
 
-/** Runtime adapter over one installed RSI skill. */
+/**
+ * Runtime adapter over one installed RLP skill.
+ *
+ * @deprecated New integrations should use `RlpRuntime` from `src/rlp/`, which
+ * owns discovery, the storage matrix and the L0/L1/L2 context adapters. This
+ * class is kept because the receipt/ledger verification surface is stable and
+ * already used by the worker.
+ */
 export class RsiAdapter {
   readonly #config: MeshConfig;
   readonly #logger: MeshLogger;
@@ -146,7 +162,7 @@ export class RsiAdapter {
     }
     const explicit = this.#config.rsi.skillPath;
     const candidates = explicit === undefined
-      ? [process.env.DSH_RSI_SKILL_PATH, ...DEFAULT_RSI_PATHS].filter((entry): entry is string => entry !== undefined && entry !== '')
+      ? [process.env.RLP_SKILL_PATH, process.env.DSH_RSI_SKILL_PATH, ...DEFAULT_RLP_PATHS].filter((entry): entry is string => entry !== undefined && entry !== '')
       : [explicit];
     for (const candidate of candidates) {
       if (!existsSync(candidate) || !statSync(candidate).isDirectory()) continue;
@@ -166,7 +182,7 @@ export class RsiAdapter {
           skillPath: candidate,
           files,
           digests,
-          error: `RSI skill is missing required files: ${missing.join(', ')}`,
+          error: `RLP skill is missing required files: ${missing.join(', ')}`,
         };
         return this.#discovery;
       }
@@ -179,7 +195,7 @@ export class RsiAdapter {
       });
       return this.#discovery;
     }
-    this.#discovery = { available: false, skillPath: null, files: {}, digests: {}, error: 'no RSI skill tree found' };
+    this.#discovery = { available: false, skillPath: null, files: {}, digests: {}, error: 'no RLP skill tree found' };
     return this.#discovery;
   }
 
@@ -551,7 +567,7 @@ export class RsiAdapter {
 }
 
 /**
- * Validate a caller-supplied RSI skill path without constructing a runtime.
+ * Validate a caller-supplied RLP skill path without constructing a runtime.
  * @param path - candidate skill root.
  * @returns discovery result.
  */
@@ -589,3 +605,6 @@ export function projectRelative(projectRoot: string, absolute: string): string {
   }
   return requireRelativePath(relative, 'path');
 }
+
+/** @deprecated Use {@link RlpRuntime} for new integrations. */
+export { RsiAdapter as RlpAdapter };

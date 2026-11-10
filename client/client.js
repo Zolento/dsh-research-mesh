@@ -94,6 +94,13 @@ window.__ModuleLoader__.load({
         captain: 'Captain',
         subagents: 'Subagents',
         openSession: '打开会话',
+        tickets: '工作 Tickets',
+        ticketsEmpty: '还没有 Ticket。显式请求会创建带授权的长期工作项。',
+        autonomous: '自主候选',
+        explicit: '显式授权',
+        resumeTicket: '恢复',
+        stopTicket: '停止',
+        ticketStopConfirm: '停止这个 Ticket 并撤销其授权？',
         emptySlot: '空槽位',
         addSubagent: '添加子代理',
         rsi: 'Research State',
@@ -201,6 +208,13 @@ window.__ModuleLoader__.load({
         captain: 'Captain',
         subagents: 'Subagents',
         openSession: 'Open session',
+        tickets: 'Tickets',
+        ticketsEmpty: 'No tickets yet. An explicit request creates a long-lived authorized work item.',
+        autonomous: 'autonomous',
+        explicit: 'explicit',
+        resumeTicket: 'Resume',
+        stopTicket: 'Stop',
+        ticketStopConfirm: 'Stop this ticket and revoke its mandate?',
         emptySlot: 'Empty slot',
         addSubagent: 'Add subagent',
         rsi: 'Research State',
@@ -931,6 +945,15 @@ window.__ModuleLoader__.load({
           .catch(error => setNotice({ kind: 'error', text: error.message }))
           .finally(() => setBusy(null))
       }
+      const ticketAction = (ticketId, action) => {
+        if (action === 'stop' && !window.confirm(t('ticketStopConfirm'))) return
+        setBusy('ticket')
+        setNotice(null)
+        api('/tickets/state', { method: 'POST', body: JSON.stringify({ ticketId, action, explicit: true }) })
+          .then(() => state.reload())
+          .catch(error => setNotice({ kind: 'error', text: error.message }))
+          .finally(() => setBusy(null))
+      }
       const groupState = (teamId, action) => {
         if (action === 'destroy' && !window.confirm(t('groupDestroyConfirm'))) return
         setBusy('group')
@@ -986,9 +1009,32 @@ window.__ModuleLoader__.load({
           h('input', { className: 'mesh-input', style: { maxWidth: '320px' }, placeholder: t('attachHint'), value: attach, onChange: event => setAttach(event.target.value), 'aria-label': t('attachHint') }),
           h('button', { className: 'mesh-btn', onClick: attachSession, disabled: busy !== null || attach.trim() === '' }, t('attachAction'))),
         h(RsiSection, { data, t }),
+        h(TicketsSection, { data, t, onStop: ticketId => ticketAction(ticketId, 'stop'), onResume: ticketId => ticketAction(ticketId, 'resume') }),
         h(GroupsSection, { ctx, t, data, expanded, toggle, openSession, onGroupState: groupState, onCreate: createGroup }),
         h(ExecutionSection, { data, t }),
         h(ActivitySection, { data, t }))
+    }
+
+    function TicketsSection({ data, t, onStop, onResume }) {
+      const tickets = data.tickets || []
+      return h('section', { className: 'mesh-section' },
+        h('h2', { className: 'mesh-section-title' }, t('tickets')),
+        tickets.length === 0
+          ? h('p', { className: 'mesh-muted' }, t('ticketsEmpty'))
+          : h('div', { className: 'mesh-card' }, tickets.map(ticket => h('div', { key: ticket.ticketId, className: 'mesh-row' },
+            h('div', null,
+              h('div', { className: 'mesh-row-title' }, ticket.title),
+              h('div', { className: 'mesh-muted' }, [ticket.routeId, ticket.autonomous ? t('autonomous') : t('explicit')].join(' · '))),
+            h('div', { className: 'mesh-row-meta' },
+              h('span', { className: 'mesh-tag' }, ticket.status),
+              ticket.groupId === null ? null : h('span', { className: 'mesh-muted' }, ticket.groupId)),
+            h('div', { className: 'mesh-actions' },
+              ticket.status === 'ended' || ticket.status === 'waiting_human'
+                ? h('button', { className: 'mesh-btn', onClick: () => onResume(ticket.ticketId) }, t('resumeTicket'))
+                : null,
+              ticket.status === 'ended'
+                ? null
+                : h('button', { className: 'mesh-btn ghost', onClick: () => onStop(ticket.ticketId) }, t('stopTicket')))))))
     }
 
     function ResearchMeshPage({ ctx, t }) {

@@ -9,11 +9,11 @@ import { makeService, makeTempProject } from '../helpers/env.ts';
 import { emptyCanonicalRefs } from '../../src/bridge/research/artifacts.ts';
 import { MeshError } from '../../src/errors.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 
 test('canonical state stays unchanged while proposals are staged and gated', async () => {
   const project = makeTempProject();
-  const routeDir = join(project.root, '.research-idea-pipeline', 'routes', 'A');
+  const routeDir = join(project.root, '.research-lifecycle-protocol', 'routes', 'A');
   mkdirSync(routeDir, { recursive: true });
   const statePath = join(routeDir, 'research-state.json');
   copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), statePath);

@@ -23,6 +23,11 @@ export const ID_PREFIX = {
   event: 'event',
   binding: 'bind',
   project: 'proj',
+  trigger: 'trg',
+  mandate: 'mnd',
+  ticket: 'tkt',
+  assignment: 'asg',
+  effect: 'eff',
 } as const;
 
 /** A durable identifier prefix. */

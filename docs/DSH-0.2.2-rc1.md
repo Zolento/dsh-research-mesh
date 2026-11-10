@@ -1,3 +1,5 @@
+> Historical adaptation record (RLP did not exist as the installed skill yet; the host behaviour it documents is unchanged).
+
 # DSH 0.2.2-rc.1 adaptation
 
 Target: local `deepseek-harness` checkout at tag `dsh-v0.2.2-rc.1`

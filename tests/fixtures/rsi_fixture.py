@@ -23,7 +23,7 @@ def main() -> int:
     args = parser.parse_args()
     skill = pathlib.Path(args.skill).resolve()
     root = pathlib.Path(args.root).resolve()
-    route = root / '.research-idea-pipeline' / 'routes' / 'A'
+    route = root / '.research-lifecycle-protocol' / 'routes' / 'A'
     route.mkdir(parents=True, exist_ok=True)
     cwd = pathlib.Path(args.cwd).resolve() if args.cwd else route
     cwd.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,528 @@
+/**
+ * SQLite persistence for autonomy objects.
+ *
+ * All rows live in the same database and connection as the bridge domain, so a
+ * Ticket, its Mandate, its Assignment and its queued Effects commit together.
+ * The tables are additive: Mesh execution tables and bridge research tables keep
+ * their existing owners.
+ */
+
+import type { DatabaseSync } from 'node:sqlite';
+import { MeshError } from '../errors.ts';
+import type { SqliteTeamStore } from '../bridge/runtime/persistence.ts';
+import { nowIso } from '../util/time.ts';
+import type {
+  AssignmentRecord,
+  AssignmentStatus,
+  EffectRecord,
+  EffectStatus,
+  MandateRecord,
+  SubscriptionMode,
+  SubscriptionRecord,
+  TicketEndReason,
+  TicketRecord,
+  TicketStatus,
+  TriggerDisposition,
+  TriggerKind,
+  TriggerRecord,
+  TriggerSource,
+} from './types.ts';
+
+/** Table DDL for the autonomy layer. */
+export const AUTONOMY_DDL = `
+CREATE TABLE IF NOT EXISTS mesh_triggers (
+  trigger_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL,
+  payload_digest TEXT NOT NULL,
+  thread_key TEXT NOT NULL,
+  actor TEXT,
+  occurred_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  disposition TEXT NOT NULL,
+  ticket_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_triggers_project ON mesh_triggers(project_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_mesh_triggers_thread ON mesh_triggers(thread_key);
+
+CREATE TABLE IF NOT EXISTS mesh_mandates (
+  mandate_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  route_id TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  source TEXT NOT NULL,
+  trigger_id TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  operations_json TEXT NOT NULL,
+  resource_ceiling_json TEXT NOT NULL,
+  rlp_scope TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  autonomous INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  revoke_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mesh_tickets (
+  ticket_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  route_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL,
+  mandate_id TEXT NOT NULL REFERENCES mesh_mandates(mandate_id),
+  group_id TEXT,
+  priority INTEGER NOT NULL,
+  autonomous INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  scope_json TEXT NOT NULL,
+  waiting_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ended_at TEXT,
+  end_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_tickets_project ON mesh_tickets(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_mesh_tickets_mandate ON mesh_tickets(mandate_id);
+
+CREATE TABLE IF NOT EXISTS mesh_assignments (
+  assignment_id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL REFERENCES mesh_tickets(ticket_id),
+  team_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  task_id TEXT,
+  job_id TEXT,
+  session_id TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT,
+  error_code TEXT,
+  error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_assignments_ticket ON mesh_assignments(ticket_id, attempt);
+
+CREATE TABLE IF NOT EXISTS mesh_subscriptions (
+  ticket_id TEXT NOT NULL REFERENCES mesh_tickets(ticket_id),
+  thread_key TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (ticket_id, thread_key)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_subscriptions_thread ON mesh_subscriptions(thread_key);
+
+CREATE TABLE IF NOT EXISTS mesh_effects (
+  effect_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  max_attempts INTEGER NOT NULL,
+  next_run_at TEXT NOT NULL,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (kind, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_effects_due ON mesh_effects(status, next_run_at);
+`;
+
+type Row = Record<string, unknown>;
+
+function str(row: Row, key: string): string { return String(row[key]); }
+function nullableStr(row: Row, key: string): string | null {
+  const value = row[key];
+  return value === null || value === undefined ? null : String(value);
+}
+function num(row: Row, key: string): number { return Number(row[key]); }
+
+function triggerFrom(row: Row): TriggerRecord {
+  return {
+    triggerId: str(row, 'trigger_id'),
+    source: str(row, 'source') as TriggerSource,
+    eventId: str(row, 'event_id'),
+    projectId: str(row, 'project_id'),
+    kind: str(row, 'kind') as TriggerKind,
+    dedupeKey: str(row, 'dedupe_key'),
+    payloadJson: str(row, 'payload_json'),
+    payloadDigest: str(row, 'payload_digest'),
+    threadKey: str(row, 'thread_key'),
+    actor: nullableStr(row, 'actor'),
+    occurredAt: str(row, 'occurred_at'),
+    receivedAt: str(row, 'received_at'),
+    disposition: str(row, 'disposition') as TriggerDisposition,
+    ticketId: nullableStr(row, 'ticket_id'),
+  };
+}
+
+function mandateFrom(row: Row): MandateRecord {
+  return {
+    mandateId: str(row, 'mandate_id'),
+    projectId: str(row, 'project_id'),
+    routeId: str(row, 'route_id'),
+    issuer: str(row, 'issuer'),
+    source: str(row, 'source') as TriggerSource,
+    triggerId: str(row, 'trigger_id'),
+    scopeJson: str(row, 'scope_json'),
+    operationsJson: str(row, 'operations_json'),
+    resourceCeilingJson: str(row, 'resource_ceiling_json'),
+    rlpScope: str(row, 'rlp_scope'),
+    policyVersion: str(row, 'policy_version'),
+    autonomous: num(row, 'autonomous') === 1,
+    createdAt: str(row, 'created_at'),
+    revokedAt: nullableStr(row, 'revoked_at'),
+    revokeReason: nullableStr(row, 'revoke_reason'),
+  };
+}
+
+function ticketFrom(row: Row): TicketRecord {
+  return {
+    ticketId: str(row, 'ticket_id'),
+    projectId: str(row, 'project_id'),
+    routeId: str(row, 'route_id'),
+    title: str(row, 'title'),
+    objective: str(row, 'objective'),
+    status: str(row, 'status') as TicketStatus,
+    mandateId: str(row, 'mandate_id'),
+    groupId: nullableStr(row, 'group_id'),
+    priority: num(row, 'priority'),
+    autonomous: num(row, 'autonomous') === 1,
+    idempotencyKey: str(row, 'idempotency_key'),
+    scopeJson: str(row, 'scope_json'),
+    waitingReason: nullableStr(row, 'waiting_reason'),
+    createdAt: str(row, 'created_at'),
+    updatedAt: str(row, 'updated_at'),
+    endedAt: nullableStr(row, 'ended_at'),
+    endReason: nullableStr(row, 'end_reason') as TicketEndReason | null,
+  };
+}
+
+function assignmentFrom(row: Row): AssignmentRecord {
+  return {
+    assignmentId: str(row, 'assignment_id'),
+    ticketId: str(row, 'ticket_id'),
+    teamId: str(row, 'team_id'),
+    status: str(row, 'status') as AssignmentStatus,
+    attempt: num(row, 'attempt'),
+    taskId: nullableStr(row, 'task_id'),
+    jobId: nullableStr(row, 'job_id'),
+    sessionId: nullableStr(row, 'session_id'),
+    createdAt: str(row, 'created_at'),
+    startedAt: nullableStr(row, 'started_at'),
+    endedAt: nullableStr(row, 'ended_at'),
+    errorCode: nullableStr(row, 'error_code'),
+    errorMessage: nullableStr(row, 'error_message'),
+  };
+}
+
+function effectFrom(row: Row): EffectRecord {
+  return {
+    effectId: str(row, 'effect_id'),
+    kind: str(row, 'kind'),
+    dedupeKey: str(row, 'dedupe_key'),
+    payloadJson: str(row, 'payload_json'),
+    status: str(row, 'status') as EffectStatus,
+    attempts: num(row, 'attempts'),
+    maxAttempts: num(row, 'max_attempts'),
+    nextRunAt: str(row, 'next_run_at'),
+    lastError: nullableStr(row, 'last_error'),
+    createdAt: str(row, 'created_at'),
+    updatedAt: str(row, 'updated_at'),
+  };
+}
+
+/** CRUD facade for the autonomy tables. */
+export class AutonomyStore {
+  readonly #store: SqliteTeamStore;
+
+  /**
+   * @param store - integrated bridge store (owns the SQLite connection).
+   */
+  constructor(store: SqliteTeamStore) {
+    this.#store = store;
+    this.#store.transaction(db => { db.exec(AUTONOMY_DDL); });
+  }
+
+  /** Run one transaction on the shared connection. */
+  transaction<T>(work: (db: DatabaseSync) => T): T {
+    return this.#store.transaction(work);
+  }
+
+  /** Read-only query on the shared connection. */
+  read<T>(work: (db: DatabaseSync) => T): T {
+    return this.#store.read(work);
+  }
+
+  // -- triggers ------------------------------------------------------------
+
+  /** Insert a Trigger once; a duplicate dedupe key returns false. */
+  insertTrigger(record: TriggerRecord): boolean {
+    return this.transaction(db => {
+      const result = db.prepare(`INSERT OR IGNORE INTO mesh_triggers
+        (trigger_id, source, event_id, project_id, kind, dedupe_key, payload_json, payload_digest,
+         thread_key, actor, occurred_at, received_at, disposition, ticket_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.triggerId, record.source, record.eventId, record.projectId, record.kind, record.dedupeKey,
+        record.payloadJson, record.payloadDigest, record.threadKey, record.actor, record.occurredAt,
+        record.receivedAt, record.disposition, record.ticketId,
+      );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  getTrigger(triggerId: string): TriggerRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_triggers WHERE trigger_id = ?').get(triggerId) as Row | undefined);
+    return row === undefined ? undefined : triggerFrom(row);
+  }
+
+  getTriggerByDedupe(dedupeKey: string): TriggerRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_triggers WHERE dedupe_key = ?').get(dedupeKey) as Row | undefined);
+    return row === undefined ? undefined : triggerFrom(row);
+  }
+
+  setTriggerDisposition(triggerId: string, disposition: TriggerDisposition, ticketId: string | null): void {
+    this.transaction(db => {
+      db.prepare('UPDATE mesh_triggers SET disposition = ?, ticket_id = ? WHERE trigger_id = ?')
+        .run(disposition, ticketId, triggerId);
+    });
+  }
+
+  listTriggers(projectId: string, limit = 100): readonly TriggerRecord[] {
+    return this.read(db => db.prepare(
+      'SELECT * FROM mesh_triggers WHERE project_id = ? ORDER BY received_at DESC LIMIT ?',
+    ).all(projectId, limit).map(row => triggerFrom(row as Row)));
+  }
+
+  // -- mandates ------------------------------------------------------------
+
+  insertMandate(record: MandateRecord): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_mandates
+        (mandate_id, project_id, route_id, issuer, source, trigger_id, scope_json, operations_json,
+         resource_ceiling_json, rlp_scope, policy_version, autonomous, created_at, revoked_at, revoke_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.mandateId, record.projectId, record.routeId, record.issuer, record.source, record.triggerId,
+        record.scopeJson, record.operationsJson, record.resourceCeilingJson, record.rlpScope,
+        record.policyVersion, record.autonomous ? 1 : 0, record.createdAt, record.revokedAt, record.revokeReason,
+      );
+    });
+  }
+
+  getMandate(mandateId: string): MandateRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_mandates WHERE mandate_id = ?').get(mandateId) as Row | undefined);
+    return row === undefined ? undefined : mandateFrom(row);
+  }
+
+  revokeMandate(mandateId: string, reason: string, at = nowIso()): void {
+    this.transaction(db => {
+      db.prepare('UPDATE mesh_mandates SET revoked_at = ?, revoke_reason = ? WHERE mandate_id = ? AND revoked_at IS NULL')
+        .run(at, reason, mandateId);
+    });
+  }
+
+  // -- tickets -------------------------------------------------------------
+
+  insertTicket(record: TicketRecord): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_tickets
+        (ticket_id, project_id, route_id, title, objective, status, mandate_id, group_id, priority,
+         autonomous, idempotency_key, scope_json, waiting_reason, created_at, updated_at, ended_at, end_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.ticketId, record.projectId, record.routeId, record.title, record.objective, record.status,
+        record.mandateId, record.groupId, record.priority, record.autonomous ? 1 : 0, record.idempotencyKey,
+        record.scopeJson, record.waitingReason, record.createdAt, record.updatedAt, record.endedAt, record.endReason,
+      );
+    });
+  }
+
+  getTicket(ticketId: string): TicketRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_tickets WHERE ticket_id = ?').get(ticketId) as Row | undefined);
+    return row === undefined ? undefined : ticketFrom(row);
+  }
+
+  getTicketByIdempotency(key: string): TicketRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_tickets WHERE idempotency_key = ?').get(key) as Row | undefined);
+    return row === undefined ? undefined : ticketFrom(row);
+  }
+
+  updateTicket(record: TicketRecord): void {
+    this.transaction(db => {
+      db.prepare(`UPDATE mesh_tickets SET status = ?, group_id = ?, mandate_id = ?, scope_json = ?, waiting_reason = ?,
+        updated_at = ?, ended_at = ?, end_reason = ? WHERE ticket_id = ?`).run(
+        record.status, record.groupId, record.mandateId, record.scopeJson, record.waitingReason, record.updatedAt,
+        record.endedAt, record.endReason, record.ticketId,
+      );
+    });
+  }
+
+  listTickets(projectId: string, statuses?: readonly TicketStatus[]): readonly TicketRecord[] {
+    return this.read(db => {
+      if (statuses === undefined || statuses.length === 0) {
+        return db.prepare('SELECT * FROM mesh_tickets WHERE project_id = ? ORDER BY created_at DESC')
+          .all(projectId).map(row => ticketFrom(row as Row));
+      }
+      const placeholders = statuses.map(() => '?').join(', ');
+      return db.prepare(`SELECT * FROM mesh_tickets WHERE project_id = ? AND status IN (${placeholders}) ORDER BY created_at DESC`)
+        .all(projectId, ...statuses).map(row => ticketFrom(row as Row));
+    });
+  }
+
+  countOpenTickets(projectId: string): number {
+    const row = this.read(db => db.prepare(
+      "SELECT COUNT(*) AS n FROM mesh_tickets WHERE project_id = ? AND status <> 'ended'",
+    ).get(projectId) as Row | undefined);
+    return row === undefined ? 0 : num(row, 'n');
+  }
+
+  findTicketsByThread(threadKey: string): readonly TicketRecord[] {
+    return this.read(db => db.prepare(`SELECT t.* FROM mesh_tickets t
+      JOIN mesh_subscriptions s ON s.ticket_id = t.ticket_id
+      WHERE s.thread_key = ? ORDER BY t.created_at DESC`).all(threadKey).map(row => ticketFrom(row as Row)));
+  }
+
+  // -- assignments ---------------------------------------------------------
+
+  insertAssignment(record: AssignmentRecord): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_assignments
+        (assignment_id, ticket_id, team_id, status, attempt, task_id, job_id, session_id,
+         created_at, started_at, ended_at, error_code, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.assignmentId, record.ticketId, record.teamId, record.status, record.attempt, record.taskId,
+        record.jobId, record.sessionId, record.createdAt, record.startedAt, record.endedAt,
+        record.errorCode, record.errorMessage,
+      );
+    });
+  }
+
+  updateAssignment(record: AssignmentRecord): void {
+    this.transaction(db => {
+      db.prepare(`UPDATE mesh_assignments SET status = ?, task_id = ?, job_id = ?, session_id = ?,
+        started_at = ?, ended_at = ?, error_code = ?, error_message = ? WHERE assignment_id = ?`).run(
+        record.status, record.taskId, record.jobId, record.sessionId, record.startedAt, record.endedAt,
+        record.errorCode, record.errorMessage, record.assignmentId,
+      );
+    });
+  }
+
+  getAssignment(assignmentId: string): AssignmentRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_assignments WHERE assignment_id = ?').get(assignmentId) as Row | undefined);
+    return row === undefined ? undefined : assignmentFrom(row);
+  }
+
+  listAssignments(ticketId: string): readonly AssignmentRecord[] {
+    return this.read(db => db.prepare('SELECT * FROM mesh_assignments WHERE ticket_id = ? ORDER BY attempt ASC')
+      .all(ticketId).map(row => assignmentFrom(row as Row)));
+  }
+
+  activeAssignment(ticketId: string): AssignmentRecord | undefined {
+    const row = this.read(db => db.prepare(
+      "SELECT * FROM mesh_assignments WHERE ticket_id = ? AND status IN ('pending','running') ORDER BY attempt DESC LIMIT 1",
+    ).get(ticketId) as Row | undefined);
+    return row === undefined ? undefined : assignmentFrom(row);
+  }
+
+  findAssignmentByJob(jobId: string): AssignmentRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_assignments WHERE job_id = ? LIMIT 1').get(jobId) as Row | undefined);
+    return row === undefined ? undefined : assignmentFrom(row);
+  }
+
+  maxAttempt(ticketId: string): number {
+    const row = this.read(db => db.prepare('SELECT IFNULL(MAX(attempt), 0) AS n FROM mesh_assignments WHERE ticket_id = ?')
+      .get(ticketId) as Row | undefined);
+    return row === undefined ? 0 : num(row, 'n');
+  }
+
+  // -- subscriptions -------------------------------------------------------
+
+  upsertSubscription(ticketId: string, threadKey: string, mode: SubscriptionMode, at = nowIso()): void {
+    this.transaction(db => {
+      db.prepare(`INSERT INTO mesh_subscriptions (ticket_id, thread_key, mode, created_at)
+        VALUES (?, ?, ?, ?) ON CONFLICT(ticket_id, thread_key) DO UPDATE SET mode = excluded.mode`)
+        .run(ticketId, threadKey, mode, at);
+    });
+  }
+
+  listSubscriptions(ticketId: string): readonly SubscriptionRecord[] {
+    return this.read(db => db.prepare('SELECT * FROM mesh_subscriptions WHERE ticket_id = ? ORDER BY created_at')
+      .all(ticketId).map(row => ({
+        ticketId: str(row as Row, 'ticket_id'),
+        threadKey: str(row as Row, 'thread_key'),
+        mode: str(row as Row, 'mode') as SubscriptionMode,
+        createdAt: str(row as Row, 'created_at'),
+      })));
+  }
+
+  // -- effects -------------------------------------------------------------
+
+  /** Insert an effect unless (kind, dedupeKey) exists; returns whether it was new. */
+  insertEffect(record: EffectRecord): boolean {
+    return this.transaction(db => {
+      const result = db.prepare(`INSERT OR IGNORE INTO mesh_effects
+        (effect_id, kind, dedupe_key, payload_json, status, attempts, max_attempts, next_run_at,
+         last_error, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        record.effectId, record.kind, record.dedupeKey, record.payloadJson, record.status, record.attempts,
+        record.maxAttempts, record.nextRunAt, record.lastError, record.createdAt, record.updatedAt,
+      );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  getEffect(effectId: string): EffectRecord | undefined {
+    const row = this.read(db => db.prepare('SELECT * FROM mesh_effects WHERE effect_id = ?').get(effectId) as Row | undefined);
+    return row === undefined ? undefined : effectFrom(row);
+  }
+
+  listDueEffects(nowIsoValue: string, limit = 20): readonly EffectRecord[] {
+    return this.read(db => db.prepare(
+      "SELECT * FROM mesh_effects WHERE status = 'pending' AND next_run_at <= ? ORDER BY next_run_at ASC, created_at ASC LIMIT ?",
+    ).all(nowIsoValue, limit).map(row => effectFrom(row as Row)));
+  }
+
+  listEffects(status?: EffectStatus, limit = 100): readonly EffectRecord[] {
+    return this.read(db => status === undefined
+      ? db.prepare('SELECT * FROM mesh_effects ORDER BY created_at DESC LIMIT ?').all(limit).map(row => effectFrom(row as Row))
+      : db.prepare('SELECT * FROM mesh_effects WHERE status = ? ORDER BY created_at DESC LIMIT ?')
+        .all(status, limit).map(row => effectFrom(row as Row)));
+  }
+
+  /** Atomically move a pending effect to running; false when another ticker won. */
+  claimEffect(effectId: string, at = nowIso()): boolean {
+    return this.transaction(db => {
+      const result = db.prepare(
+        "UPDATE mesh_effects SET status = 'running', updated_at = ? WHERE effect_id = ? AND status = 'pending'",
+      ).run(at, effectId);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  finishEffect(effectId: string, status: EffectStatus, options: {
+    error?: string | null;
+    nextRunAt?: string;
+    attempts?: number;
+    at?: string;
+  } = {}): void {
+    const at = options.at ?? nowIso();
+    this.transaction(db => {
+      db.prepare(`UPDATE mesh_effects SET status = ?, attempts = COALESCE(?, attempts),
+        next_run_at = COALESCE(?, next_run_at), last_error = ?, updated_at = ? WHERE effect_id = ?`).run(
+        status, options.attempts ?? null, options.nextRunAt ?? null, options.error ?? null, at, effectId,
+      );
+    });
+  }
+
+  /** Fail a missing row loudly: every autonomy mutation must hit a real record. */
+  requireTicket(ticketId: string): TicketRecord {
+    const ticket = this.getTicket(ticketId);
+    if (ticket === undefined) {
+      throw new MeshError('TICKET_NOT_FOUND', `unknown ticket ${ticketId}`, { ticketId });
+    }
+    return ticket;
+  }
+}

@@ -1,3 +1,5 @@
+> Historical record. Findings and fixes below were made against the v0.1.0 RSI-era code; the current integration is described in `docs/fusion/`.
+
 # Group-control harness audit
 
 Scope: the code that actually controls research groups — `TeamManager`,

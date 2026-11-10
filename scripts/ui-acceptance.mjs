@@ -17,7 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DSH = process.env.DSH_BIN ?? 'dsh';
 const PORT = Number(process.env.MESH_UI_PORT ?? 3311);
 const CDP_PORT = Number(process.env.MESH_CDP_PORT ?? 9333);
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 const SHOTS = join(ROOT, 'docs', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 
@@ -38,11 +38,11 @@ function prepareProject() {
   git(join(project, 'source'), ['config', 'user.name', 'Mesh Acceptance']);
   git(join(project, 'source'), ['add', '-A']);
   git(join(project, 'source'), ['commit', '-q', '-m', 'fixture']);
-  const route = join(project, '.research-idea-pipeline', 'routes', 'A');
+  const route = join(project, '.research-lifecycle-protocol', 'routes', 'A');
   mkdirSync(route, { recursive: true });
   execFileSync('cp', [join(SKILL, 'templates', 'research-state.template.json'), join(route, 'research-state.json')]);
   for (const routeId of ['B', 'C']) {
-    const other = join(project, '.research-idea-pipeline', 'routes', routeId);
+    const other = join(project, '.research-lifecycle-protocol', 'routes', routeId);
     mkdirSync(other, { recursive: true });
     execFileSync('cp', [join(route, 'research-state.json'), join(other, 'research-state.json')]);
   }

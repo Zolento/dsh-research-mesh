@@ -1,3 +1,5 @@
+> Historical engineering run (RSI-era paths). Current integration: `docs/fusion/`.
+
 # Live SSH + native-member scenario
 
 This follows [LIVE-GPU-SCENARIO.md](LIVE-GPU-SCENARIO.md) with two changes:

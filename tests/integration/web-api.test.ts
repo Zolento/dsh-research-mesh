@@ -8,12 +8,12 @@ import { after, test } from 'node:test';
 import { makeService, makeTempProject } from '../helpers/env.ts';
 import { createMeshApiHandler } from '../../src/host/web-api.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 const servers: Server[] = [];
 after(() => { for (const server of servers) server.close(); });
 
 function statePath(root: string): string {
-  const dir = join(root, '.research-idea-pipeline', 'routes', 'A');
+  const dir = join(root, '.research-lifecycle-protocol', 'routes', 'A');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'research-state.json');
   copyFileSync(join(SKILL, 'templates', 'research-state.template.json'), path);

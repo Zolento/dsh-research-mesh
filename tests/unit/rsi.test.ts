@@ -11,7 +11,7 @@ import { MeshError } from '../../src/errors.ts';
 import { RsiAdapter } from '../../src/rsi/adapter.ts';
 import { createLogger } from '../../src/util/logger.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 
 function adapterFor(projectRoot: string, allowTestStub = true): RsiAdapter {
   const config = makeConfig({ root: projectRoot, source: join(projectRoot, 'source'), fakeRemote: join(projectRoot, 'fake'), conda: '/bin/true', commit: '', cleanup: () => {} }, {
@@ -32,7 +32,7 @@ test('discovers the installed skill and runs state_check read-only', async () =>
     const discovery = adapter.discover();
     assert.equal(discovery.available, true);
     assert.equal(discovery.files['scripts/state_check.py'], true);
-    const state = adapter.readState(join(project.root, '.research-idea-pipeline', 'routes', 'A', 'research-state.json'));
+    const state = adapter.readState(join(project.root, '.research-lifecycle-protocol', 'routes', 'A', 'research-state.json'));
     assert.equal(state.version, fixture.stateVersion);
     const check = await adapter.checkState(state.path);
     assert.equal(check.ok, true, JSON.stringify(check.raw.stdout).slice(0, 1000));

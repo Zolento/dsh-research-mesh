@@ -11,7 +11,7 @@ import { buildRsiFixture } from '../helpers/rsi.ts';
 import { prepareShim, shimPaths, SHIM_SPEC_SCHEMA } from '../../src/rsi/blocking-shim.ts';
 import { findConsumeEvent } from '../../src/rsi/consumed-run.ts';
 
-const SKILL = process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/rsi-pipeline';
+const SKILL = process.env.RLP_SKILL_PATH ?? process.env.RSI_SKILL_PATH ?? '/home/lenovo/.agents/skills/research-lifecycle-protocol';
 const EXPERIMENT = `import json, os
 out = os.environ["MESH_ARTIFACT_DIR"]
 os.makedirs(out, exist_ok=True)
@@ -56,7 +56,7 @@ test('consumed ledger: RSI consumes once, shim blocks, Mesh launches once and in
     });
     const stateDigest = createHash('sha256').update(readFileSync(fixture.state)).digest('hex');
     const authManifest = JSON.parse(readFileSync(fixture.manifest, 'utf8')) as Record<string, unknown>;
-    const executionManifestPath = join(project.root, '.research-idea-pipeline', 'routes', 'A', 'execution-manifest.json');
+    const executionManifestPath = join(project.root, '.research-lifecycle-protocol', 'routes', 'A', 'execution-manifest.json');
     writeFileSync(executionManifestPath, `${JSON.stringify({
       ...authManifest,
       argv: ['python3', 'experiments/mesh_experiment.py'],

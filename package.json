@@ -1,8 +1,8 @@
 {
   "name": "dsh-research-mesh",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "DSH Research Mesh: a durable, recoverable multi-group research collaboration runtime for DeepSeek Harness.",
+  "description": "DSH Research Mesh: a durable, recoverable multi-group research runtime for DeepSeek Harness, integrated with the Research Lifecycle Protocol (RLP v2.2.0).",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

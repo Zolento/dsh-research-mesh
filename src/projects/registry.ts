@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'n
 import { basename, join } from 'node:path';
 import { isAbsolute, relative as relativePath, resolve } from 'node:path';
 import { MeshError } from '../errors.ts';
+import { detectStorageLayout } from '../bridge/adapters/research-pipeline.ts';
 import type { MeshConfig } from '../config/types.ts';
 import { MeshStore } from '../storage/mesh-store.ts';
 import type { MeshProjectRecord, MeshProjectStatus, MeshSessionBinding, SessionRole } from '../storage/types.ts';
@@ -46,6 +47,11 @@ export interface RepositoryInspection {
   readonly configuredSourceDir: string;
   readonly controlDir: string;
   readonly worktreesDir: string;
+  /** RLP control-root layout found in the repository. */
+  readonly storageKind: 'new' | 'legacy' | 'ambiguous' | 'none';
+  /** New root exists but carries no route state. */
+  readonly newRootPresent: boolean;
+  /** Legacy root exists and must migrate before formal runs. */
   readonly migrationRequired: boolean;
 }
 
@@ -98,7 +104,10 @@ export class ProjectRegistry {
     if (!existsSync(resolve(root, '.git'))) {
       throw new MeshError('CONFIG_INVALID', 'repository path is not a Git checkout', { repositoryRef: root });
     }
-    const routesRoot = join(root, '.research-idea-pipeline', 'routes');
+    const layout = detectStorageLayout(root);
+    // The new runtime root wins; a legacy-only checkout is reported as
+    // MIGRATION_REQUIRED instead of being treated as the current root.
+    const routesRoot = join(layout.kind === 'legacy' ? layout.legacyRoot : layout.newRoot, 'routes');
     const routes: RepositoryRouteState[] = [];
     if (existsSync(routesRoot)) {
       for (const entry of readdirSync(routesRoot, { withFileTypes: true })) {
@@ -137,7 +146,9 @@ export class ProjectRegistry {
       configuredSourceDir: this.#config.sourceDir,
       controlDir: this.#config.controlDir,
       worktreesDir: this.#config.worktreesDir,
-      migrationRequired: routes.length === 0,
+      storageKind: layout.kind,
+      newRootPresent: layout.kind === 'new' || layout.kind === 'ambiguous',
+      migrationRequired: layout.kind === 'legacy',
     };
   }
 
