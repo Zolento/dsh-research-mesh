@@ -53,7 +53,7 @@ import { MeshWorker, type WorkerRoundResult, type WorkerStatus } from './worker.
 import { nowIso } from './util/time.ts';
 import { findConsumeEvent } from './rsi/consumed-run.ts';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
 import { newWorkerId } from './util/ids.ts';
 import { canonicalStatePath, detectStorageLayout, readCanonicalStateFile } from './bridge/adapters/research-pipeline.ts';
@@ -299,6 +299,9 @@ export class MeshService {
       this.#workerId = workerId;
       this.#transportKind = transport.kind;
       this.#initialized = true;
+      try { const adopted = this.adoptLegacyProjects(); if (adopted.length > 0) this.#logger.info('adopted legacy projects', { count: adopted.length }); } catch (error) {
+        this.#logger.warn('legacy project adoption failed', { error: String(error) });
+      }
       if (this.#config.startupRecovery) await this.#startupRecovery();
       try { await effects.tick(); } catch (error) {
         this.#logger.warn('autonomy effects tick failed during startup', { error: String(error) });
@@ -790,6 +793,43 @@ export class MeshService {
       try { this.#requireProjects().bind(projectId, result.sessionId, 'control'); } catch { /* already bound */ }
     }
     return result;
+  }
+
+  /**
+   * Adopt projects registered before per-project runtimes existed.
+   *
+   * A legacy row has no `source_dir`, so it was stored as `registered` even
+   * when its repository could run. Adoption gives it the standard per-project
+   * layout and re-evaluates runnability; it never moves or edits a checkout.
+   * @returns ids of the adopted projects.
+   */
+  adoptLegacyProjects(): readonly string[] {
+    const adopted: string[] = [];
+    for (const record of this.#requireStore().listProjects()) {
+      if (record.sourceDir !== null) continue;
+      const sourceDir = resolve(record.repositoryRef);
+      const controlDir = join(this.#config.controlDir, 'projects', record.projectId);
+      let runnable = false;
+      try { runnable = existsSync(join(sourceDir, '.git')); } catch { runnable = false }
+      if (runnable) {
+        try { runnable = this.#requireProjects().view(record).rsiReadable; } catch { runnable = false }
+      }
+      const status = runnable && (record.status === 'registered' || record.status === 'active') ? 'active' : record.status;
+      this.#requireStore().setProjectLayout(record.projectId, {
+        sourceDir,
+        controlDir,
+        worktreesDir: join(controlDir, 'worktrees'),
+        artifactsDir: join(controlDir, 'artifacts'),
+        runnable,
+        status,
+      });
+      this.#requireStore().appendEvent('project', record.projectId, 'adopted-per-project-layout', {
+        sourceDir, controlDir, runnable, status,
+      });
+      this.#logger.info('project adopted into its own runtime', { projectId: record.projectId, controlDir, runnable });
+      adopted.push(record.projectId);
+    }
+    return adopted;
   }
 
   /** Control-plane status of every project runtime. */

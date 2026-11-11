@@ -412,6 +412,29 @@ export class MeshStore {
 
   // -- projects and session bindings ---------------------------------------
 
+  /**
+   * Adopt a pre-runtime project row: give it its own layout and recompute
+   * whether this Mesh can execute it.
+   * @param projectId - project identity.
+   * @param layout - resolved per-project paths and status.
+   */
+  setProjectLayout(projectId: string, layout: {
+    sourceDir: string;
+    controlDir: string;
+    worktreesDir: string;
+    artifactsDir: string;
+    runnable: boolean;
+    status: MeshProjectStatus;
+  }): void {
+    this.#store.transaction(db => {
+      db.prepare(`UPDATE mesh_projects SET source_dir = ?, control_dir = ?, worktrees_dir = ?,
+        artifacts_dir = ?, runnable = ?, status = ?, updated_at = ? WHERE project_id = ?`).run(
+        layout.sourceDir, layout.controlDir, layout.worktreesDir, layout.artifactsDir,
+        layout.runnable ? 1 : 0, layout.status, nowIso(), projectId,
+      );
+    });
+  }
+
   /** Record the resident control session of one project. */
   setProjectControlSession(projectId: string, sessionId: string): void {
     this.#store.transaction(db => {

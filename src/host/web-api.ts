@@ -308,6 +308,10 @@ export function createMeshApiHandler(service: MeshService): (req: IncomingMessag
         send(res, 200, { ok: true, value: await service.simulateLocalTask(projectId, teamId) });
         return;
       }
+      if (path === '/projects/adopt' && method === 'POST') {
+        send(res, 200, { ok: true, value: { adopted: service.adoptLegacyProjects() } });
+        return;
+      }
       if (path === '/runtimes' && method === 'GET') {
         send(res, 200, { ok: true, value: service.runtimeStatus() });
         return;

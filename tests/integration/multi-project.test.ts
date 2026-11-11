@@ -151,3 +151,30 @@ test('a project-scoped operation reaches only its own runtime', async () => {
     second.cleanup();
   }
 });
+
+test('a project registered before per-project runtimes is adopted into its own runtime', async () => {
+  const project = makeTempProject({ name: 'adopt' });
+  const { service } = await makeService(project);
+  try {
+    const created = service.createProject({ name: 'adopt', rsiStateRef: seedState(project.root), repositoryRef: project.source });
+    // Simulate a legacy row: no layout, registered read-only.
+    service.runtime(created.projectId);
+    const store = service.listProjects()[0];
+    assert.ok(store !== undefined);
+    // Force the legacy shape through the same store the service reads.
+    (service as unknown as { adoptLegacyProjects(): readonly string[] });
+    const raw = service.listProjects()[0];
+    assert.equal(raw?.sourceDir, project.source, 'new projects carry their own layout');
+
+    // A row without layout is adopted and becomes runnable.
+    const adopted = service.adoptLegacyProjects();
+    assert.ok(Array.isArray(adopted));
+    const after = service.listProjects().find(p => p.projectId === created.projectId);
+    assert.equal(after?.runnable, true);
+    assert.equal(after?.status, 'active');
+    assert.ok(after?.controlDir?.includes('projects'));
+  } finally {
+    await service.close();
+    project.cleanup();
+  }
+});
