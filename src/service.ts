@@ -53,7 +53,7 @@ import { MeshWorker, type WorkerRoundResult, type WorkerStatus } from './worker.
 import { nowIso } from './util/time.ts';
 import { findConsumeEvent } from './rsi/consumed-run.ts';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { MeshLogger } from './util/logger.ts';
 import { newWorkerId } from './util/ids.ts';
 import { canonicalStatePath, detectStorageLayout, readCanonicalStateFile } from './bridge/adapters/research-pipeline.ts';
@@ -682,7 +682,32 @@ export class MeshService {
    * from them. A missing root is resolved by RLP Bootstrap, not by Mesh.
    * @param projectRoot - project to check; defaults to the configured root.
    */
-  #assertRlpFormalRunSync(projectRoot = this.#config.projectRoot): void {
+  /**
+   * Root that carries a project's RLP control directory.
+   *
+   * Normally the project's own checkout. When the canonical state lives outside
+   * that checkout, the directory that owns its `.research-*-pipeline` root is
+   * used instead, so the storage matrix is evaluated against the real root.
+   * @param projectId - registered project.
+   * @returns absolute root for the RLP storage check.
+   */
+  #projectRootOf(projectId?: string): string {
+    if (projectId === undefined) return this.#config.projectRoot;
+    const record = this.#store?.getProject(projectId);
+    const sourceDir = record?.sourceDir ?? record?.repositoryRef ?? this.#config.projectRoot;
+    const layout = detectStorageLayout(sourceDir);
+    if (layout.kind !== 'none' || record === undefined) return sourceDir;
+    const marker = `${sep}routes${sep}`;
+    const at = record.rsiStateRef.indexOf(marker);
+    if (at === -1) return sourceDir;
+    const candidate = record.rsiStateRef.slice(0, at);
+    const parent = basename(candidate) === '.research-idea-pipeline' || basename(candidate) === '.research-lifecycle-protocol'
+      ? dirname(candidate)
+      : candidate;
+    return detectStorageLayout(parent).kind === 'none' ? sourceDir : parent;
+  }
+
+  #assertRlpFormalRunSync(projectRoot = this.#config.projectRoot, projectId?: string): void {
     const layout = detectStorageLayout(projectRoot);
     if (layout.kind === 'ambiguous') {
       throw new MeshError('RLP_AMBIGUOUS_STORAGE_ROOT', 'both RLP storage roots exist; resolve them before formal runs', {
@@ -695,7 +720,7 @@ export class MeshService {
         migration: 'python3 scripts/migrate_project_root.py inspect --project <project>',
       });
     }
-    if (this.#config.rlp.enabled && !this.#formalRunLayoutOk(projectRoot)) {
+    if (this.#config.rlp.enabled && !this.#formalRunLayoutOk(projectRoot, projectId)) {
       throw new MeshError('RLP_GATE_HOLD', 'RLP storage root is not READY for formal runs', {
         projectRoot, status: this.#rlpStatusValue,
       });
@@ -709,7 +734,11 @@ export class MeshService {
    * @param projectRoot - project to check.
    * @returns true when a new-root route tree exists.
    */
-  #formalRunLayoutOk(projectRoot = this.#config.projectRoot): boolean {
+  #formalRunLayoutOk(projectRoot = this.#config.projectRoot, projectId?: string): boolean {
+    if (projectId !== undefined) {
+      const runtime = this.#runtimes.get(projectId);
+      if (runtime !== undefined) return runtime.rlpReady;
+    }
     const layout = detectStorageLayout(projectRoot);
     if (layout.kind === 'legacy' || layout.kind === 'ambiguous') return false;
     return existsSync(join(layout.newRoot, 'routes'));
@@ -1436,7 +1465,11 @@ export class MeshService {
         status: project.status,
       });
     }
-    this.#assertRlpFormalRunSync();
+    try {
+      const runtime = this.#runtimes.get(input.projectId) ?? this.runtime(input.projectId);
+      await runtime.primeRlp();
+    } catch { /* fall back to the layout gate below */ }
+    this.#assertRlpFormalRunSync(this.#projectRootOf(input.projectId), input.projectId);
     const routeStatePath = input.researchStatePath ?? canonicalStatePath(this.#config.projectRoot, input.routeId);
     const routeState = readCanonicalStateFile(routeStatePath);
     if (!routeState.exists || routeState.version === null) {
@@ -1645,7 +1678,7 @@ export class MeshService {
 
   submitExperimentTask(input: SubmitExperimentTaskInput): { task: MeshTaskView; created: boolean } {
     this.#assertProjectActive(input.projectId);
-    this.#assertRlpFormalRunSync();
+    this.#assertRlpFormalRunSync(this.#projectRootOf(input.projectId), input.projectId);
     const payload: import('./worker.ts').ExperimentTaskPayload = {
       workerId: input.workerId,
       gpuId: input.gpuId,
